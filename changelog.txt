@@ -1,3 +1,13 @@
+v1.1.0
+
+- Added: CrowdSec (nftables firewall bouncer) - optional at install, or menu Firewall -> CrowdSec & AppSec
+- Added: Nginx is built with Lua (LuaJIT, lua-nginx-module, lua-resty-core)
+- Added: CrowdSec AppSec (WAF) with the official CrowdSec Nginx Lua bouncer, fail-open
+- Added: Nginx access log is switched on with CrowdSec, daily logrotate with a selectable retention
+- Added: Telegram can be configured during the installation; Bot Token / Chat ID are saved once
+- Added: Telegram message for every IP banned by CrowdSec
+- Changed: Telegram service/disk notify run from menu/cronjob, service notify works on RHEL family
+
 v1.0.0
 
 - Added: Debian 11/12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux/Rocky/Oracle Linux/CentOS Stream/RHEL 8+

@@ -1,0 +1,36 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/crowdsec
+
+_run(){
+    if ! cs_installed; then
+        ALERT=$(printf "%s\n" "${RED}Ban chua cai dat CrowdSec.${NC}")
+        return
+    fi
+
+    read -r -p "Ban co chac chan muon go CrowdSec va AppSec khong ? (y/n) " prompt_uninstall
+    if [[ "${prompt_uninstall}" =~ ^([yY])$ ]]; then
+        cs_uninstall
+        ALERT=$(printf "%s\n" "${GREEN}Go cai dat CrowdSec thanh cong.${NC}")
+    else
+        ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}")
+    fi
+}
+
+ALERT=""
+prompt_uninstall=""
+
+_run
+clear
+printf "%s\n" "${ALERT}"
+menu_crowdsec

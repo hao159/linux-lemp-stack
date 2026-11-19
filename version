@@ -1,4 +1,4 @@
-script_version=1.0.0
+script_version=1.1.0
 php_list=php8.5 php8.4 php8.3 php8.2 php8.1 php8.0 php7.4
 mariadb_version=11.8
 phpmyadmin_version=5.2.3
@@ -9,3 +9,11 @@ more_clear_headers_v=0.42
 nginx_module_vts_v=0.2.7
 nodejs_version=22
 list_plugins=really-simple-ssl wps-hide-login wps-limit-login seo-by-rank-math
+luajit_version=2.1-20261107
+ngx_devel_kit_version=0.3.4
+lua_nginx_module_version=0.10.31
+lua_resty_core_version=0.1.34rc3
+lua_resty_lrucache_version=0.15
+lua_cjson_version=2.1.0.20
+lua_resty_http_version=0.17.2
+cs_nginx_bouncer_version=1.2.4

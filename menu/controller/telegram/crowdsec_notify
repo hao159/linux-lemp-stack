@@ -1,0 +1,44 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Called from the Telegram menu and from the CrowdSec menu, the caller shows the next menu.
+
+source /var/hostvn/menu/helpers/telegram
+source /var/hostvn/menu/helpers/crowdsec
+
+_run(){
+    if ! cs_installed; then
+        ALERT=$(printf "%s" "${RED}Ban chua cai dat CrowdSec (Quan ly Firewall -> CrowdSec & AppSec).${NC}")
+    elif cs_telegram_enabled; then
+        read -r -p "Thong bao CrowdSec dang bat. Ban co muon tat khong ? (y/n) " prompt_cs_tg
+        if [[ "${prompt_cs_tg}" =~ ^([yY])$ ]]; then
+            cs_telegram_disable
+            ALERT=$(printf "%s" "${GREEN}Tat thong bao CrowdSec thanh cong.${NC}")
+        else
+            ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        fi
+    elif ! tg_require; then
+        ALERT=$(printf "%s" "${RED}Ban chua cau hinh Telegram.${NC}")
+    elif msg=$(cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"); then
+        ALERT=$(printf "%s" "${GREEN}Bat thong bao CrowdSec thanh cong. Moi IP bi chan se duoc gui ve Telegram.${NC}")
+    else
+        ALERT=$(printf "%s" "${RED}Bat thong bao CrowdSec that bai. ${msg}${NC}")
+    fi
+}
+
+ALERT=''
+msg=''
+prompt_cs_tg=''
+
+_run
+clear
+printf "%s\n" "${ALERT}"

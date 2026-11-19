@@ -1,0 +1,674 @@
+#!/bin/bash
+
+######################################################################
+#   CrowdSec + AppSec (WAF) helper - shared by installer and menu    #
+#                                                                    #
+#  - CrowdSec reads the Nginx access/error logs and the SSH log and  #
+#    bans bad IPs through the nftables firewall bouncer. Installing  #
+#    it switches the Nginx access log on (with its own logrotate).   #
+#  - AppSec is the WAF: the official CrowdSec Lua bouncer runs       #
+#    inside Nginx (built with lua-nginx-module) and sends every      #
+#    request, body included, to the AppSec engine.                   #
+#                                                                    #
+#  Requires menu/helpers/os (pkg_install, nginx_build ...) loaded.   #
+######################################################################
+
+# shellcheck disable=SC2034
+
+CS_ACQUIS_DIR="/etc/crowdsec/acquis.d"
+CS_ACQUIS_LOGS="${CS_ACQUIS_DIR}/hostvn.yaml"
+CS_ACQUIS_APPSEC="${CS_ACQUIS_DIR}/hostvn-appsec.yaml"
+CS_PROFILES="/etc/crowdsec/profiles.yaml"
+CS_FW_BOUNCER_PKG="crowdsec-firewall-bouncer-nftables"
+CS_FW_BOUNCER_CONF="/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml"
+
+# Nginx Lua bouncer (AppSec)
+CS_BOUNCER_NAME="hostvn-nginx"
+CS_BOUNCER_LIB="/usr/local/lua/crowdsec"
+CS_BOUNCER_DATA="/var/lib/crowdsec/lua"
+CS_BOUNCER_CONF="/etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf"
+CS_NGINX_MAIN="/etc/nginx/nginx.conf"
+CS_NGINX_CONF="/etc/nginx/extra/crowdsec_nginx.conf"
+
+# Access log of all websites, only written while CrowdSec is installed
+CS_ACCESS_LOG_DIR="/var/log/nginx/access"
+CS_ACCESS_LOG="${CS_ACCESS_LOG_DIR}/access.log"
+CS_ACCESS_LOG_MARK="hostvn-crowdsec"
+CS_LOGROTATE="/etc/logrotate.d/hostvn-nginx-access"
+CS_LOGROTATE_DEFAULT=7
+
+CS_TG_NAME="hostvn_telegram"
+CS_TG_FILE="/etc/crowdsec/notifications/${CS_TG_NAME}.yaml"
+CS_ALLOWLIST="hostvn"
+CS_WHITELIST_FILE="/etc/crowdsec/parsers/s02-enrich/hostvn-whitelist.yaml"
+
+############################################
+# State
+############################################
+cs_installed() {
+    # bash remembers the path of removed commands, the file itself is checked
+    [ -x "$(command -v cscli 2>/dev/null)" ]
+}
+
+cs_appsec_enabled() {
+    [ -f "${CS_NGINX_CONF}" ] && grep -q "crowdsec_nginx.conf" "${CS_NGINX_MAIN}" 2>/dev/null
+}
+
+cs_telegram_enabled() {
+    [ -f "${CS_TG_FILE}" ]
+}
+
+_cs_port_busy() {
+    ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${1}\$"
+}
+
+_cs_free_port() {
+    local p
+    for p in $(seq "$1" "$(($1 + 50))"); do
+        if ! _cs_port_busy "${p}"; then
+            echo "${p}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_cs_wait_port() {
+    local i
+    for i in $(seq 1 30); do
+        _cs_port_busy "$1" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+_cs_lapi_port() {
+    local p
+    p=$(grep -m1 -E '^[[:space:]]*listen_uri:' /etc/crowdsec/config.yaml 2>/dev/null | sed 's/.*://' | tr -d ' ')
+    echo "${p:-8080}"
+}
+
+_cs_restart() {
+    systemctl restart crowdsec || return 1
+    _cs_wait_port "$(_cs_lapi_port)"
+}
+
+_cs_nginx_reload() {
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx
+}
+
+############################################
+# Access log + logrotate
+############################################
+cs_access_log_enabled() {
+    grep -q "${CS_ACCESS_LOG_MARK}" "${CS_NGINX_MAIN}" 2>/dev/null
+}
+
+# The http block ships with "access_log off;", the websites inherit the setting.
+cs_access_log_enable() {
+    cs_access_log_enabled && return 0
+    mkdir -p "${CS_ACCESS_LOG_DIR}"
+    sed -i "0,/^\([[:space:]]*\)access_log[[:space:]]\+off;/s||\1access_log ${CS_ACCESS_LOG}; # ${CS_ACCESS_LOG_MARK}|" "${CS_NGINX_MAIN}"
+    if ! cs_access_log_enabled; then
+        echo "Khong tim thay 'access_log off;' trong ${CS_NGINX_MAIN}, chua bat duoc access log."
+        return 1
+    fi
+    if ! nginx -t >/dev/null 2>&1; then
+        cs_access_log_disable
+        echo "Cau hinh Nginx bi loi sau khi bat access log, da hoan tac."
+        return 1
+    fi
+    systemctl reload nginx 2>/dev/null
+    return 0
+}
+
+cs_access_log_disable() {
+    sed -i "s|^\([[:space:]]*\)access_log .*# ${CS_ACCESS_LOG_MARK}.*|\1access_log off;|" "${CS_NGINX_MAIN}"
+    _cs_nginx_reload
+}
+
+cs_valid_rotate_days() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 365 ]
+}
+
+# cs_logrotate_set <days> : rotate the access log every day, keep <days> files
+cs_logrotate_set() {
+    local days="${1:-${CS_LOGROTATE_DEFAULT}}"
+    cs_valid_rotate_days "${days}" || days="${CS_LOGROTATE_DEFAULT}"
+    cat >"${CS_LOGROTATE}" <<END
+# Managed by hostvn - access log read by CrowdSec
+${CS_ACCESS_LOG_DIR}/*.log {
+    daily
+    rotate ${days}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        [ -f /run/nginx.pid ] && kill -USR1 "\$(cat /run/nginx.pid)"
+    endscript
+}
+END
+}
+
+cs_logrotate_days() {
+    grep -m1 -E '^[[:space:]]*rotate ' "${CS_LOGROTATE}" 2>/dev/null | awk '{print $2}'
+}
+
+# Ask how long the access log is kept. Sets CS_ROTATE_DAYS.
+cs_prompt_rotate_days() {
+    local days
+    echo "CrowdSec can access log cua Nginx. Log duoc rotate moi ngay va nen (gzip)."
+    echo "  1) Giu 7 ngay (mac dinh)"
+    echo "  2) Giu 14 ngay"
+    echo "  3) Giu 30 ngay"
+    echo "  4) Tu nhap so ngay"
+    while true; do
+        read -r -p "Nhap vao lua chon cua ban [1-4] (Enter = 1): " days
+        case "${days}" in
+        "" | 1) CS_ROTATE_DAYS=7 ;;
+        2) CS_ROTATE_DAYS=14 ;;
+        3) CS_ROTATE_DAYS=30 ;;
+        4)
+            read -r -p "Nhap vao so ngay muon giu log (1-365): " CS_ROTATE_DAYS
+            ;;
+        *) CS_ROTATE_DAYS="" ;;
+        esac
+        cs_valid_rotate_days "${CS_ROTATE_DAYS}" && return 0
+        echo "Lua chon khong chinh xac. Vui long nhap lai."
+    done
+}
+
+############################################
+# Install / remove CrowdSec
+############################################
+_cs_write_acquis() {
+    mkdir -p "${CS_ACQUIS_DIR}"
+    {
+        echo "# Managed by hostvn - logs of the websites"
+        echo "filenames:"
+        echo "  - ${CS_ACCESS_LOG_DIR}/*.log"
+        # The package may already watch /var/log/nginx, reading it twice doubles the events
+        if ! grep -qs "/var/log/nginx" /etc/crowdsec/acquis.yaml; then
+            echo "  - /var/log/nginx/*.log"
+        fi
+        echo "  - /home/*/*/logs/*.log"
+        echo "labels:"
+        echo "  type: nginx"
+        # Distributions without rsyslog only log SSH to the journal
+        if [ ! -f /var/log/auth.log ] && [ ! -f /var/log/secure ] && ! grep -qs "journalctl" /etc/crowdsec/acquis.yaml; then
+            echo "---"
+            echo "source: journalctl"
+            echo "journalctl_filter:"
+            if [ "${OS_FAMILY}" == "rhel" ]; then
+                echo "  - \"_SYSTEMD_UNIT=sshd.service\""
+            else
+                echo "  - \"_SYSTEMD_UNIT=ssh.service\""
+            fi
+            echo "labels:"
+            echo "  type: syslog"
+        fi
+    } >"${CS_ACQUIS_LOGS}"
+}
+
+# cs_install [days the access log is kept]
+cs_install() {
+    local lapi_busy="no" lapi_port repo_script
+
+    if cs_installed; then
+        echo "CrowdSec da duoc cai dat."
+        return 0
+    fi
+
+    # 8080 is the default port of the CrowdSec local API
+    _cs_port_busy 8080 && lapi_busy="yes"
+
+    repo_script=$(mktemp)
+    if ! curl -fsSL https://install.crowdsec.net -o "${repo_script}" || ! sh "${repo_script}"; then
+        rm -f "${repo_script}"
+        echo "Khong them duoc repository cua CrowdSec."
+        return 1
+    fi
+    rm -f "${repo_script}"
+
+    if ! pkg_install crowdsec; then
+        echo "Cai dat goi crowdsec that bai."
+        return 1
+    fi
+
+    if [ "${lapi_busy}" == "yes" ]; then
+        lapi_port=$(_cs_free_port 8081) || return 1
+        sed -i "s|127.0.0.1:8080|127.0.0.1:${lapi_port}|g" /etc/crowdsec/config.yaml /etc/crowdsec/local_api_credentials.yaml
+    fi
+
+    # CrowdSec is blind for HTTP without the access log
+    cs_logrotate_set "$1"
+    cs_access_log_enable
+
+    systemctl enable crowdsec >/dev/null 2>&1
+    cscli hub update >/dev/null 2>&1
+    cscli collections install crowdsecurity/linux crowdsecurity/sshd crowdsecurity/nginx \
+        crowdsecurity/base-http-scenarios crowdsecurity/http-cve crowdsecurity/wordpress >/dev/null 2>&1
+    _cs_write_acquis
+
+    if ! _cs_restart; then
+        echo "CrowdSec khong khoi dong duoc. Kiem tra: journalctl -u crowdsec"
+        return 1
+    fi
+
+    # Without the bouncer CrowdSec only detects, it does not block
+    pkg_install_optional nftables
+    if pkg_install "${CS_FW_BOUNCER_PKG}"; then
+        if [ "${lapi_busy}" == "yes" ] && [ -f "${CS_FW_BOUNCER_CONF}" ]; then
+            sed -i "s|127.0.0.1:8080|127.0.0.1:${lapi_port}|g" "${CS_FW_BOUNCER_CONF}"
+        fi
+        systemctl enable crowdsec-firewall-bouncer >/dev/null 2>&1
+        systemctl restart crowdsec-firewall-bouncer
+    else
+        echo "Canh bao: khong cai duoc ${CS_FW_BOUNCER_PKG}, CrowdSec chi phat hien chu chua chan IP."
+    fi
+
+    return 0
+}
+
+cs_uninstall() {
+    cs_appsec_enabled && cs_appsec_disable
+    cs_access_log_disable
+    _cs_profiles_del
+    systemctl disable --now crowdsec-firewall-bouncer crowdsec >/dev/null 2>&1
+    pkg_remove "${CS_FW_BOUNCER_PKG}" crowdsec
+    rm -f "${CS_ACQUIS_LOGS}" "${CS_ACQUIS_APPSEC}" "${CS_TG_FILE}" "${CS_WHITELIST_FILE}" \
+        "${CS_LOGROTATE}" "${CS_BOUNCER_CONF}"
+    rm -rf "${CS_BOUNCER_LIB}" "${CS_BOUNCER_DATA}"
+}
+
+############################################
+# AppSec (WAF) - Nginx Lua bouncer
+############################################
+_cs_appsec_port() {
+    local p
+    p=$(grep -m1 'listen_addr:' "${CS_ACQUIS_APPSEC}" 2>/dev/null | sed 's/.*://' | tr -d ' ')
+    echo "${p:-7422}"
+}
+
+# Servers installed before v1.1.0 run an Nginx without Lua: build the same version again.
+cs_nginx_rebuild_lua() {
+    local ver
+    ver=$(nginx -v 2>&1 | grep -o '[0-9.]*$')
+    mkdir -p /var/log/hostvn
+    (nginx_build "${ver}") >/var/log/hostvn/nginx_build.log 2>&1 || return 1
+    nginx_has_lua || return 1
+    nginx -t >/dev/null 2>&1 || return 1
+    systemctl restart nginx
+}
+
+# Download the official bouncer (Lua library + ban page) and write its config
+# _cs_bouncer_install <lapi port> <appsec port> <api key>
+_cs_bouncer_install() {
+    local ver tmp
+    ver=$(get_version cs_nginx_bouncer_version)
+    [ -n "${ver}" ] || return 1
+    tmp=$(mktemp -d)
+    if ! curl -fsSL "https://github.com/crowdsecurity/cs-nginx-bouncer/releases/download/v${ver}/crowdsec-nginx-bouncer.tgz" |
+        tar -xz --strip-components=1 -C "${tmp}" || [ ! -f "${tmp}/lua-mod/lib/crowdsec.lua" ]; then
+        rm -rf "${tmp}"
+        return 1
+    fi
+
+    rm -rf "${CS_BOUNCER_LIB}"
+    mkdir -p "${CS_BOUNCER_LIB}" "${CS_BOUNCER_DATA}/templates" "$(dirname "${CS_BOUNCER_CONF}")"
+    cp -r "${tmp}"/lua-mod/lib/* "${CS_BOUNCER_LIB}/"
+    cp -r "${tmp}"/lua-mod/templates/* "${CS_BOUNCER_DATA}/templates/"
+    echo "${ver}" >"${CS_BOUNCER_LIB}/.version"
+
+    (
+        umask 077
+        cp "${tmp}/lua-mod/config_example.conf" "${CS_BOUNCER_CONF}"
+    )
+    rm -rf "${tmp}"
+
+    _cs_bouncer_set API_URL "http://127.0.0.1:${1}"
+    _cs_bouncer_set API_KEY "${3}"
+    # stream: decisions are pulled in the background, no request waits for the local API
+    _cs_bouncer_set MODE "stream"
+    _cs_bouncer_set APPSEC_URL "http://127.0.0.1:${2}"
+    # Fail open: the websites keep working when CrowdSec is stopped or restarting
+    _cs_bouncer_set APPSEC_FAILURE_ACTION "passthrough"
+    _cs_bouncer_set APPSEC_CONNECT_TIMEOUT "200"
+    _cs_bouncer_set APPSEC_SEND_TIMEOUT "500"
+    _cs_bouncer_set APPSEC_PROCESS_TIMEOUT "1000"
+    chown root:nginx "${CS_BOUNCER_CONF}" 2>/dev/null
+    chmod 640 "${CS_BOUNCER_CONF}"
+}
+
+_cs_bouncer_set() {
+    sed -i "s|^${1}=.*|${1}=${2}|" "${CS_BOUNCER_CONF}"
+}
+
+_cs_nginx_lua_conf() {
+    local ver ca="" f
+    ver=$(cat "${CS_BOUNCER_LIB}/.version" 2>/dev/null)
+    for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        if [ -f "${f}" ]; then
+            ca="lua_ssl_trusted_certificate ${f};"
+            break
+        fi
+    done
+
+    cat >"${CS_NGINX_CONF}" <<END
+# Managed by hostvn - CrowdSec Nginx bouncer + AppSec (WAF). Use the menu: hostvn
+lua_package_path '${CS_BOUNCER_LIB}/?.lua;;';
+lua_shared_dict crowdsec_cache 50m;
+${ca}
+
+init_by_lua_block {
+    hostvn_cs_ready = false
+    hostvn_admin_port = nil
+    cs = require "crowdsec"
+    local ok, err = cs.init("${CS_BOUNCER_CONF}", "crowdsec-nginx-bouncer/v${ver}")
+    if ok == nil then
+        -- a broken bouncer must not stop the web server
+        ngx.log(ngx.ERR, "[Crowdsec] " .. tostring(err))
+    else
+        hostvn_cs_ready = true
+    end
+    -- phpMyAdmin / admin tools (protected by a password) are not sent to the WAF
+    local f = io.open("/var/hostvn/.hostvn.conf", "r")
+    if f then
+        for line in f:lines() do
+            local port = line:match("^admin_port=(%d+)")
+            if port then hostvn_admin_port = port end
+        end
+        f:close()
+    end
+}
+
+map \$server_addr \$hostvn_cs_unix {
+    default 0;
+    "~unix:" 1;
+}
+
+access_by_lua_block {
+    if not hostvn_cs_ready or ngx.var.hostvn_cs_unix == "1" or ngx.var.server_port == hostvn_admin_port then
+        return
+    end
+    local cs = require "crowdsec"
+    cs.Allow(ngx.var.remote_addr)
+}
+
+init_worker_by_lua_block {
+    if not hostvn_cs_ready then
+        return
+    end
+    cs = require "crowdsec"
+    local mode = cs.get_mode()
+    if string.lower(mode) == "stream" then
+        cs.SetupStream()
+    end
+    if ngx.worker.id() == 0 then
+        cs.SetupMetrics()
+    end
+}
+END
+}
+
+_cs_nginx_lua_off() {
+    sed -i '/crowdsec_nginx\.conf/d' "${CS_NGINX_MAIN}" 2>/dev/null
+    rm -f "${CS_NGINX_CONF}"
+}
+
+# Ask the AppSec engine directly. _cs_appsec_probe <port> <api key> <uri> -> HTTP code
+_cs_appsec_probe() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -H "X-Crowdsec-Appsec-Ip: 192.0.2.1" \
+        -H "X-Crowdsec-Appsec-Uri: ${3}" \
+        -H "X-Crowdsec-Appsec-Host: appsec-test.local" \
+        -H "X-Crowdsec-Appsec-Verb: GET" \
+        -H "X-Crowdsec-Appsec-User-Agent: hostvn-selftest" \
+        -H "X-Crowdsec-Appsec-Api-Key: ${2}" \
+        "http://127.0.0.1:${1}/"
+}
+
+# Returns 0 = enabled, 1 = error, 2 = Nginx has no Lua (cs_nginx_rebuild_lua first)
+cs_appsec_enable() {
+    local port key code_bad code_ok
+
+    if ! cs_installed; then
+        echo "Ban chua cai dat CrowdSec."
+        return 1
+    fi
+    if ! nginx_has_lua; then
+        echo "Nginx chua duoc build kem Lua."
+        return 2
+    fi
+
+    cscli hub update >/dev/null 2>&1
+    if ! cscli collections install crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules >/dev/null 2>&1; then
+        echo "Khong cai duoc bo rule AppSec tu CrowdSec Hub."
+        return 1
+    fi
+
+    if [ -f "${CS_ACQUIS_APPSEC}" ]; then
+        port=$(_cs_appsec_port)
+    else
+        port=$(_cs_free_port 7422) || return 1
+    fi
+    mkdir -p "${CS_ACQUIS_DIR}"
+    cat >"${CS_ACQUIS_APPSEC}" <<END
+# Managed by hostvn - CrowdSec AppSec (WAF)
+appsec_configs:
+  - crowdsecurity/appsec-default
+labels:
+  type: appsec
+listen_addr: 127.0.0.1:${port}
+source: appsec
+END
+
+    cscli bouncers delete "${CS_BOUNCER_NAME}" >/dev/null 2>&1
+    key=$(cscli bouncers add "${CS_BOUNCER_NAME}" -o raw 2>/dev/null)
+    if [ -z "${key}" ]; then
+        echo "Khong tao duoc API key cho bouncer."
+        return 1
+    fi
+
+    if ! _cs_restart || ! _cs_wait_port "${port}"; then
+        echo "AppSec khong khoi dong duoc. Kiem tra: journalctl -u crowdsec"
+        rm -f "${CS_ACQUIS_APPSEC}"
+        _cs_restart
+        return 1
+    fi
+
+    # Never put a broken WAF in front of the websites
+    code_bad=$(_cs_appsec_probe "${port}" "${key}" "/.env")
+    code_ok=$(_cs_appsec_probe "${port}" "${key}" "/")
+    if [ "${code_bad}" != "403" ] || [ "${code_ok}" != "200" ]; then
+        echo "AppSec tra ve ket qua khong dung (/.env: ${code_bad}, /: ${code_ok}), khong bat tren Nginx."
+        return 1
+    fi
+
+    if ! _cs_bouncer_install "$(_cs_lapi_port)" "${port}" "${key}"; then
+        echo "Khong tai duoc CrowdSec Nginx bouncer tu GitHub."
+        return 1
+    fi
+
+    _cs_nginx_lua_conf
+    grep -q "crowdsec_nginx.conf" "${CS_NGINX_MAIN}" ||
+        sed -i "0,/^\([[:space:]]*\)include[[:space:]]\+\/etc\/nginx\/conf\.d\/\*\.conf;/s||\1include ${CS_NGINX_CONF};\n&|" "${CS_NGINX_MAIN}"
+    if ! grep -q "crowdsec_nginx.conf" "${CS_NGINX_MAIN}"; then
+        _cs_nginx_lua_off
+        echo "Khong tim thay 'include /etc/nginx/conf.d/*.conf;' trong ${CS_NGINX_MAIN}."
+        return 1
+    fi
+
+    if ! nginx -t >/dev/null 2>&1; then
+        _cs_nginx_lua_off
+        echo "Cau hinh Nginx bi loi sau khi them AppSec, da hoan tac. Kiem tra: nginx -t"
+        return 1
+    fi
+    systemctl reload nginx
+    return 0
+}
+
+cs_appsec_disable() {
+    _cs_nginx_lua_off
+    _cs_nginx_reload
+    rm -f "${CS_ACQUIS_APPSEC}" "${CS_BOUNCER_CONF}"
+    if cs_installed; then
+        cscli bouncers delete "${CS_BOUNCER_NAME}" >/dev/null 2>&1
+        _cs_restart
+    fi
+    return 0
+}
+
+############################################
+# Telegram notification for each ban
+############################################
+_cs_profiles_add() {
+    local tmp
+    grep -qE "^[[:space:]]*-[[:space:]]*${CS_TG_NAME}[[:space:]]*\$" "${CS_PROFILES}" && return 0
+    cp -p "${CS_PROFILES}" "${CS_PROFILES}.hostvn.bak"
+    tmp=$(mktemp)
+    # Add the plugin to every profile, reusing an existing "notifications:" list
+    awk -v n="${CS_TG_NAME}" '
+        function item(line,    indent) {
+            indent = "  "
+            if (line ~ /^[ \t]*-[ \t]/) { indent = line; sub(/-.*/, "", indent) }
+            print indent "- " n
+        }
+        pending { item($0); pending = 0 }
+        /^notifications:[ \t]*$/ { print; pending = 1; has = 1; next }
+        /^on_success:/ { if (!has) { print "notifications:"; print "  - " n } }
+        /^---/ { has = 0 }
+        { print }
+        END { if (pending) item("") }
+    ' "${CS_PROFILES}" >"${tmp}" && cat "${tmp}" >"${CS_PROFILES}"
+    rm -f "${tmp}"
+}
+
+_cs_profiles_del() {
+    local tmp
+    [ -f "${CS_PROFILES}" ] || return 0
+    tmp=$(mktemp)
+    # Drop the plugin, then any "notifications:" key left without item
+    grep -vE "^[[:space:]]*-[[:space:]]*${CS_TG_NAME}[[:space:]]*\$" "${CS_PROFILES}" |
+        awk '
+            { lines[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    if (lines[i] ~ /^notifications:[ \t]*$/ && lines[i + 1] !~ /^[ \t]*-[ \t]/) continue
+                    print lines[i]
+                }
+            }
+        ' >"${tmp}" && cat "${tmp}" >"${CS_PROFILES}"
+    rm -f "${tmp}"
+}
+
+# cs_telegram_enable <chat_id> <token>
+cs_telegram_enable() {
+    if ! cs_installed; then
+        echo "Ban chua cai dat CrowdSec."
+        return 1
+    fi
+    mkdir -p /etc/crowdsec/notifications
+    (
+        umask 077
+        cat >"${CS_TG_FILE}" <<END
+# Managed by hostvn - Telegram message for every decision taken by CrowdSec
+type: http
+name: ${CS_TG_NAME}
+log_level: info
+format: |
+  {"chat_id": "${1}", "disable_web_page_preview": true, "text": "[$(hostname)] CrowdSec\n{{range . -}}{{range .Decisions -}}{{.Value}}: {{.Type}} {{.Duration}} - {{.Scenario}}\n{{end -}}{{end -}}"}
+url: https://api.telegram.org/bot${2}/sendMessage
+method: POST
+headers:
+  Content-Type: "application/json"
+END
+    )
+    chmod 600 "${CS_TG_FILE}"
+    _cs_profiles_add
+
+    if ! _cs_restart; then
+        # A broken profile stops the local API, never leave it like that
+        _cs_profiles_del
+        rm -f "${CS_TG_FILE}"
+        _cs_restart
+        echo "CrowdSec khong khoi dong duoc voi cau hinh Telegram, da hoan tac."
+        return 1
+    fi
+    return 0
+}
+
+cs_telegram_disable() {
+    _cs_profiles_del
+    rm -f "${CS_TG_FILE}"
+    cs_installed && _cs_restart
+    return 0
+}
+
+############################################
+# Decisions / allowlist
+############################################
+_cs_has_allowlists() {
+    cscli allowlists --help >/dev/null 2>&1
+}
+
+# IPs in the allowlist are never banned (and are not blocked by AppSec on recent versions)
+cs_allow_ip() {
+    cs_installed || return 1
+    if _cs_has_allowlists; then
+        cscli allowlists create "${CS_ALLOWLIST}" -d "Trusted IPs (hostvn)" >/dev/null 2>&1
+        cscli allowlists add "${CS_ALLOWLIST}" "$1" >/dev/null 2>&1 || return 1
+    else
+        if [ ! -f "${CS_WHITELIST_FILE}" ]; then
+            cat >"${CS_WHITELIST_FILE}" <<END
+name: hostvn/whitelist
+description: "Trusted IPs (hostvn)"
+whitelist:
+  reason: "trusted ip"
+  ip:
+END
+        fi
+        grep -q "\"$1\"" "${CS_WHITELIST_FILE}" || echo "    - \"$1\"" >>"${CS_WHITELIST_FILE}"
+        systemctl reload crowdsec 2>/dev/null || _cs_restart
+    fi
+    cscli decisions delete --ip "$1" >/dev/null 2>&1
+    return 0
+}
+
+cs_allow_list() {
+    if _cs_has_allowlists; then
+        cscli allowlists inspect "${CS_ALLOWLIST}" 2>/dev/null || echo "Chua co IP nao."
+    elif [ -f "${CS_WHITELIST_FILE}" ]; then
+        grep -E '^ +- ' "${CS_WHITELIST_FILE}"
+    else
+        echo "Chua co IP nao."
+    fi
+}
+
+cs_status() {
+    local svc
+    for svc in crowdsec crowdsec-firewall-bouncer; do
+        printf "%-28s: %s\n" "${svc}" "$(systemctl is-active "${svc}" 2>/dev/null)"
+    done
+    if cs_appsec_enabled; then
+        printf "%-28s: %s\n" "AppSec (WAF)" "on - 127.0.0.1:$(_cs_appsec_port)"
+    else
+        printf "%-28s: %s\n" "AppSec (WAF)" "off"
+    fi
+    if cs_access_log_enabled; then
+        printf "%-28s: %s\n" "Access log" "${CS_ACCESS_LOG} (giu $(cs_logrotate_days) ngay)"
+    else
+        printf "%-28s: %s\n" "Access log" "off"
+    fi
+    if cs_telegram_enabled; then
+        printf "%-28s: %s\n" "Telegram notify" "on"
+    else
+        printf "%-28s: %s\n" "Telegram notify" "off"
+    fi
+    echo ""
+    cscli bouncers list 2>/dev/null
+    echo ""
+    cscli alerts list -l 10 2>/dev/null
+}

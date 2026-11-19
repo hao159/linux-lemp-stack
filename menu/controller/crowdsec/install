@@ -1,0 +1,90 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/crowdsec
+source /var/hostvn/menu/helpers/telegram
+
+_confirm(){
+    while true
+    do
+        read -r -p "$1 (y/n) " prompt_cs
+        echo
+        if [[ "${prompt_cs}" =~ ^([yY])$ || "${prompt_cs}" =~ ^([nN])$ ]]; then
+            break
+        else
+            printf "%s\n" "${RED}Lua chon khong chinh xac. Vui long chon lai.${NC}"
+        fi
+    done
+}
+
+_run(){
+    if cs_installed; then
+        ALERT=$(printf "%s\n" "${RED}Ban da cai dat CrowdSec roi.${NC}")
+        return
+    fi
+
+    _confirm "Ban co muon cai dat CrowdSec (tu dong chan IP tan cong/scan) khong ?"
+    if [[ "${prompt_cs}" =~ ^([nN])$ ]]; then
+        ALERT=$(printf "%s\n" "${RED}Huy cai dat CrowdSec.${NC}")
+        return
+    fi
+    _confirm "Ban co muon bat AppSec (WAF chan request doc hai tren Nginx) khong ?"
+    prompt_appsec="${prompt_cs}"
+    if [[ "${prompt_appsec}" =~ ^([yY])$ ]] && ! nginx_has_lua; then
+        printf "%s\n" "${RED}Nginx hien tai chua co Lua, script se build lai Nginx (mat vai phut, Nginx khoi dong lai 1 lan).${NC}"
+        _confirm "Ban co dong y build lai Nginx khong ?"
+        prompt_appsec="${prompt_cs}"
+    fi
+    echo ""
+    cs_prompt_rotate_days
+
+    printf "%s\n" "${GREEN}Dang cai dat CrowdSec, vui long cho...${NC}"
+    if ! cs_install "${CS_ROTATE_DAYS}"; then
+        ALERT=$(printf "%s\n" "${RED}Cai dat CrowdSec that bai.${NC}")
+        return
+    fi
+
+    # The admin must never be banned from the server he is installing
+    ssh_ip=$(echo "${SSH_CLIENT}" | awk '{print $1}')
+    if [ -n "${ssh_ip}" ] && cs_allow_ip "${ssh_ip}"; then
+        NOTE="Da them IP cua ban (${ssh_ip}) vao danh sach tin cay."
+    fi
+
+    ALERT=$(printf "%s\n" "${GREEN}Cai dat CrowdSec thanh cong.${NC}")
+    if [[ "${prompt_appsec}" =~ ^([yY])$ ]]; then
+        if ! nginx_has_lua; then
+            printf "%s\n" "${GREEN}Dang build lai Nginx kem Lua, vui long cho...${NC}"
+            cs_nginx_rebuild_lua
+        fi
+        if cs_appsec_enable; then
+            ALERT=$(printf "%s\n" "${GREEN}Cai dat CrowdSec va bat AppSec thanh cong.${NC}")
+        else
+            ALERT=$(printf "%s\n" "${RED}Cai dat CrowdSec thanh cong nhung khong bat duoc AppSec.${NC}")
+        fi
+    fi
+
+    if tg_load && cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"; then
+        NOTE="${NOTE} Da bat thong bao Telegram khi chan IP."
+    fi
+}
+
+ALERT=""
+NOTE=""
+prompt_cs=""
+prompt_appsec=""
+ssh_ip=""
+
+_run
+clear
+printf "%s\n" "${ALERT}"
+[ -n "${NOTE}" ] && printf "%s\n" "${GREEN}${NOTE}${NC}"
+menu_crowdsec

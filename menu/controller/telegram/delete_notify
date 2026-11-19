@@ -10,80 +10,81 @@
 #  Please do not copy under any circumstance for commercial reason!  #
 ######################################################################
 
+source /var/hostvn/menu/helpers/telegram
+source /var/hostvn/menu/helpers/crowdsec
+
 _select_notify_action(){
     clear
     printf "%s\n" "Lua chon thao tac ban muon thuc hien"
-    PS3="Nhap vao lua chon cua ban [ 1 - 4 ]: "
-    options_js=("Delete Service (Nginx, MariaDB, PHP) Notify" "Delete Disk notify" "Delete SSH notify" "Cancel")
-    select opt_js_minify in "${options_js[@]}"; do
-        case $opt_js_minify in
-        "Delete Service (Nginx, MariaDB, PHP) Notify")
-            action="delete_service_notify"
-            break
-            ;;
-        "Delete Disk notify")
-            action="delete_disk_notify"
-            break
-            ;;
-        "Delete SSH notify")
-            action="delete_ssh_service"
-            break
-            ;;
-        "Cancel")
-            action="cancel"
-            break
-            ;;
+    PS3="Nhap vao lua chon cua ban [ 1 - 6 ]: "
+    options=("Delete Service (Nginx, MariaDB, PHP) Notify" "Delete Disk notify" "Delete SSH notify" "Delete CrowdSec notify" "Xoa toan bo va xoa Token/Chat ID" "Cancel")
+    select opt in "${options[@]}"; do
+        case $REPLY in
+        1) action="service"; break ;;
+        2) action="disk"; break ;;
+        3) action="ssh"; break ;;
+        4) action="crowdsec"; break ;;
+        5) action="all"; break ;;
+        6) action="cancel"; break ;;
         *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai." ;;
         esac
     done
 }
 
 _delete_ssh_notify(){
-    if [ ! -f /etc/profile.d/ssh-notify.sh ]; then
-        ALERT=$(printf "%s\n" "${RED}Ban chua cau hinh SSH Notify.${NC}")
-    else
-        rm -rf /etc/profile.d/ssh-notify.sh
+    if tg_ssh_enabled; then
+        tg_ssh_disable
         ALERT=$(printf "%s\n" "${GREEN}Xoa cau hinh SSH Notify thanh cong.${NC}")
+    else
+        ALERT=$(printf "%s\n" "${RED}Ban chua cau hinh SSH Notify.${NC}")
     fi
 }
 
 _delete_disk_notify(){
-    if [ -f /var/hostvn/telegram/diskNotify.sh ]; then
-        rm -rf /var/hostvn/telegram/diskNotify.sh
-        cron_exists=$(crontab -l | grep -w 'diskNotify')
-        if [ -n "${cron_exists}" ]; then
-            crontab -u root -l | grep -v "diskNotify" | crontab -u root -
-        fi
-        ALERT=$(printf "%s\n" "${GREEN}Xoa cau hinh SSH Notify thanh cong.${NC}")
+    if tg_disk_enabled; then
+        tg_disk_disable
+        ALERT=$(printf "%s\n" "${GREEN}Xoa cau hinh Disk Notify thanh cong.${NC}")
     else
         ALERT=$(printf "%s\n" "${RED}Ban chua cau hinh Disk Notify.${NC}")
     fi
 }
 
 _delete_service_notify(){
-    if [ -f /var/hostvn/telegram/servicesNotify.sh ]; then
-        rm -rf /var/hostvn/telegram/servicesNotify.sh
-        cron_exists=$(crontab -l | grep -w 'servicesNotify')
-        if [ -n "${cron_exists}" ]; then
-            crontab -u root -l | grep -v "servicesNotify" | crontab -u root -
-        fi
+    if tg_service_enabled; then
+        tg_service_disable
         ALERT=$(printf "%s\n" "${GREEN}Xoa cau hinh Services Notify thanh cong.${NC}")
     else
         ALERT=$(printf "%s\n" "${RED}Ban chua cau hinh Services Notify.${NC}")
     fi
 }
 
-_run(){
-    if [ $action == "delete_service_notify" ]; then
-        _delete_service_notify
-    elif [ $action == "delete_disk_notify" ]; then
-        _delete_disk_notify
-    elif [ $action == "delete_ssh_service" ]; then
-        _delete_ssh_notify
+_delete_crowdsec_notify(){
+    if cs_telegram_enabled; then
+        cs_telegram_disable
+        ALERT=$(printf "%s\n" "${GREEN}Xoa cau hinh CrowdSec Notify thanh cong.${NC}")
     else
-        clear
-        ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}")
+        ALERT=$(printf "%s\n" "${RED}Ban chua cau hinh CrowdSec Notify.${NC}")
     fi
+}
+
+_delete_all(){
+    tg_ssh_disable
+    tg_disk_disable
+    tg_service_disable
+    cs_telegram_enabled && cs_telegram_disable
+    rm -f "${TG_CONF}"
+    ALERT=$(printf "%s\n" "${GREEN}Da xoa toan bo cau hinh Telegram.${NC}")
+}
+
+_run(){
+    case ${action} in
+    service) _delete_service_notify ;;
+    disk) _delete_disk_notify ;;
+    ssh) _delete_ssh_notify ;;
+    crowdsec) _delete_crowdsec_notify ;;
+    all) _delete_all ;;
+    *) ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}") ;;
+    esac
 
     clear
     printf "%s\n" "$ALERT"

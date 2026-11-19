@@ -22,11 +22,12 @@ Script viết bằng shell dùng để cài đặt và quản lý LEMP Stack (Ng
 
 ## 2. Phần mềm được cài
 
-- **Nginx** (bản stable, build từ source để mọi hệ điều hành có cùng module): Brotli, headers-more, cache purge, VTS, FastCGI cache.
+- **Nginx** (bản stable, build từ source để mọi hệ điều hành có cùng module): Brotli, headers-more, cache purge, VTS, FastCGI cache, Lua (LuaJIT).
 - **PHP**: 8.5, 8.4, 8.3, 8.2, 8.1, 8.0, 7.4 — chạy song song hai phiên bản, đổi phiên bản qua menu.
 - **MariaDB** 11.8 LTS, **phpMyAdmin** 5.2.
 - WP-CLI, Composer, Rclone, acme.sh (Let's Encrypt), Fail2ban, Opcache Dashboard.
 - Tuỳ chọn qua menu: Redis, Memcached, Node.js, ClamAV/ImunifyAV, ionCube.
+- Tuỳ chọn lúc cài hoặc thêm sau qua menu: **CrowdSec**, **AppSec (WAF)**, thông báo **Telegram** — xem [mục 3.3](#33-crowdsec-appsec-và-telegram).
 
 Phiên bản các phần mềm nằm trong file [`version`](version) — chỉ cần sửa file này để nâng cấp.
 
@@ -58,6 +59,28 @@ git clone https://github.com/hao159/linux-lemp-stack.git && cd linux-lemp-stack 
 ```
 
 Log cài đặt: `/opt/install.txt`. Thông tin đăng nhập: `/var/hostvn/.hostvn.conf`.
+
+### 3.3. CrowdSec, AppSec và Telegram
+
+Trình cài đặt hỏi ba tuỳ chọn, trả lời `n` thì bỏ qua và bật sau trong menu `hostvn`:
+
+| Tuỳ chọn | Tác dụng | Bật sau khi đã cài |
+| --- | --- | --- |
+| CrowdSec | Đọc log Nginx/SSH, tự chặn IP tấn công/scan ở tầng firewall (nftables) | Firewall → CrowdSec & AppSec → Cài đặt CrowdSec |
+| AppSec (WAF) | Kiểm tra từng request trên Nginx, chặn request độc hại (403), IP vi phạm nhiều lần bị ban | Firewall → CrowdSec & AppSec → Bật/Tắt AppSec |
+| Telegram | Báo đăng nhập SSH, dịch vụ ngừng chạy, đầy ổ cứng, IP bị CrowdSec chặn | Công cụ → Telegram notify |
+
+Server cài bằng phiên bản cũ: chạy `hostvn` → **Cập nhật Scripts** để có các menu trên.
+
+Lưu ý:
+
+- Nginx được build kèm Lua (LuaJIT + lua-nginx-module). AppSec dùng bouncer Lua chính thức của CrowdSec nên kiểm tra được URI, header và cả body của request.
+- Server cài từ bản 1.0.0 có Nginx chưa kèm Lua: khi bật AppSec, menu sẽ hỏi và build lại Nginx cùng phiên bản (mất vài phút, Nginx khởi động lại một lần).
+- Cài CrowdSec sẽ bật access log của Nginx tại `/var/log/nginx/access/access.log` (CrowdSec cần log này để phát hiện scan). Log được rotate hằng ngày và nén; số ngày giữ log (7/14/30 hoặc tự nhập) chọn lúc cài, đổi lại ở Firewall → CrowdSec & AppSec → Thay đổi thời gian giữ access log. Gỡ CrowdSec thì access log tắt lại.
+- Khi CrowdSec dừng hoặc khởi động lại, Nginx cho request đi qua (fail-open), website không bị gián đoạn.
+- Port admin (phpMyAdmin, Opcache dashboard) không đi qua AppSec để tránh chặn nhầm câu lệnh SQL.
+- IP đang SSH lúc cài CrowdSec được thêm vào danh sách tin cậy. Thêm IP khác: Firewall → CrowdSec & AppSec → IP tin cậy.
+- Bot Token và Chat ID chỉ nhập một lần, lưu ở `/var/hostvn/telegram/telegram.conf` (quyền 600).
 
 ## 4. Tạo website chạy bằng IP:PORT
 
@@ -108,7 +131,7 @@ REPO_SLUG=ten-ban/linux-lemp-stack REPO_BRANCH=master ./install
 - **SSL**: Let's Encrypt (kèm CloudFlare DNS API), SSL trả phí.
 - **Cache**: Nginx FastCGI cache, Redis, Memcached, Opcache.
 - **LEMP**: quản lý Nginx (update/rebuild), PHP (đổi phiên bản, PHP thứ hai, ionCube, thông số), MariaDB, log.
-- **Firewall**: mở port, block/unblock IP (ufw hoặc firewalld + Fail2ban).
+- **Firewall**: mở port, block/unblock IP (ufw hoặc firewalld + Fail2ban), CrowdSec & AppSec (WAF).
 - **WordPress**: cài tự động, cập nhật, tối ưu database, bảo mật, cấu hình plugin cache/SEO.
 - **Backup**: local, Google Drive, OneDrive (Rclone), cronjob tự động.
 - **Công cụ**: Node.js, antivirus, nén ảnh, thông báo Telegram, cập nhật script.

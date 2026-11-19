@@ -29,8 +29,12 @@ LEMP_SRC_DIR="${LEMP_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 export LEMP_SRC_DIR
 # shellcheck source=menu/helpers/os
 source "${LEMP_SRC_DIR}/menu/helpers/os"
+# shellcheck source=menu/helpers/telegram
+source "${LEMP_SRC_DIR}/menu/helpers/telegram"
+# shellcheck source=menu/helpers/crowdsec
+source "${LEMP_SRC_DIR}/menu/helpers/crowdsec"
 
-# prod = public VPS, dev = internal dev server (sites on IP:PORT)
+# prod =public VPS, dev = internal dev server (sites on IP:PORT)
 INSTALL_MODE="${INSTALL_MODE:-prod}"
 
 SCRIPTS_VERSION=$(get_version script_version)
@@ -282,6 +286,102 @@ option_change_ssh_port() {
         esac
     done
     sleep 1
+}
+
+# ask_yes_no <question> : returns 0 for Yes
+ask_yes_no() {
+    local answer
+    while true; do
+        read -r -p "$1 (y/n) " answer
+        case "${answer}" in
+        y | Y) return 0 ;;
+        n | N) return 1 ;;
+        *) printf "${RED}%s${NC}\n" "${WRONG_PHP_SELECT_2}" ;;
+        esac
+    done
+}
+
+# CrowdSec, AppSec and Telegram are optional, all of them can be added later from the menu.
+option_security() {
+    INSTALL_CROWDSEC="n"
+    INSTALL_APPSEC="n"
+    clear
+    echo "CrowdSec doc log Nginx/SSH va tu dong chan IP tan cong, IP scan (giam log ban)."
+    echo "Khi cai CrowdSec, access log cua Nginx se duoc bat (co rotate)."
+    echo "AppSec la WAF cua CrowdSec, chan request doc hai truoc khi toi website."
+    echo ""
+    if ask_yes_no "Ban co muon cai dat CrowdSec khong ?"; then
+        INSTALL_CROWDSEC="y"
+        if ask_yes_no "Ban co muon bat AppSec (WAF) khong ?"; then
+            INSTALL_APPSEC="y"
+        fi
+        echo ""
+        cs_prompt_rotate_days
+    fi
+}
+
+option_telegram() {
+    SETUP_TELEGRAM="n"
+    clear
+    echo "Thong bao qua Telegram: dang nhap SSH, dich vu ngung hoat dong, day o cung, IP bi CrowdSec chan."
+    echo ""
+    if ask_yes_no "Ban co muon cau hinh thong bao Telegram khong ?"; then
+        # The token must not end up in the installation trace
+        set +x
+        if tg_prompt; then
+            SETUP_TELEGRAM="y"
+        else
+            echo "Bo qua Telegram. Ban co the cau hinh sau trong menu hostvn."
+        fi
+        set -x
+        sleep 2
+    fi
+}
+
+setup_security() {
+    CROWDSEC_STATUS="Khong cai dat"
+    APPSEC_STATUS="Khong bat"
+    ACCESS_LOG_STATUS="Tat"
+    [ "${INSTALL_CROWDSEC}" == "y" ] || return 0
+
+    if ! cs_install "${CS_ROTATE_DAYS}"; then
+        CROWDSEC_STATUS="Cai dat that bai (cai lai trong menu hostvn)"
+        return 0
+    fi
+    CROWDSEC_STATUS="Da cai dat"
+    if cs_access_log_enabled; then
+        ACCESS_LOG_STATUS="${CS_ACCESS_LOG} (giu ${CS_ROTATE_DAYS} ngay)"
+    fi
+
+    # The admin must never be banned from the server he is installing
+    SSH_CLIENT_IP=$(echo "${SSH_CLIENT}" | awk '{print $1}')
+    if [ -n "${SSH_CLIENT_IP}" ] && cs_allow_ip "${SSH_CLIENT_IP}"; then
+        CROWDSEC_STATUS="Da cai dat (IP tin cay: ${SSH_CLIENT_IP})"
+    fi
+
+    if [ "${INSTALL_APPSEC}" == "y" ]; then
+        if cs_appsec_enable; then
+            APPSEC_STATUS="Da bat"
+        else
+            APPSEC_STATUS="Bat that bai (bat lai trong menu hostvn)"
+        fi
+    fi
+}
+
+setup_telegram() {
+    TELEGRAM_STATUS="Khong cau hinh"
+    [ "${SETUP_TELEGRAM}" == "y" ] || return 0
+
+    set +x
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+    tg_ssh_enable
+    tg_service_enable
+    tg_disk_enable
+    TELEGRAM_STATUS="SSH login, dich vu, o cung"
+    if cs_installed && cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"; then
+        TELEGRAM_STATUS="${TELEGRAM_STATUS}, IP bi CrowdSec chan"
+    fi
+    set -x
 }
 
 select_php_ver() {
@@ -2977,6 +3077,9 @@ if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
     check_duplicate_php
 fi
 
+option_security
+option_telegram
+
 php_memory_calculation
 cal_ssl_cache_size
 php_parameter
@@ -3049,6 +3152,10 @@ else
     printf "${RED}%s${NC}\n" "Cau hinh Nginx bi loi, vui long kiem tra: nginx -t"
 fi
 
+# Nginx has to be running: AppSec is plugged into it and reloads it
+setup_security
+setup_telegram
+
 set +x
 clear
 sleep 1
@@ -3069,6 +3176,10 @@ printf "Link Opcache Dashboard       : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN
 echo "User phpMyAdmin va Admin Tool: admin                                   "
 printf "Password Admin tool          : %s\n" "${ADMIN_TOOL_PWD}"
 printf "Password phpMyAdmin          : %s\n" "${sql_admin_pass}"
+printf "CrowdSec                     : %s\n" "${CROWDSEC_STATUS}"
+printf "AppSec (WAF)                 : %s\n" "${APPSEC_STATUS}"
+printf "Access log                   : %s\n" "${ACCESS_LOG_STATUS}"
+printf "Telegram notify              : %s\n" "${TELEGRAM_STATUS}"
 printf "=========================================================================\n"
 
 if [ "${INSTALL_MODE}" == "dev" ]; then

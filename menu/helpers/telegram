@@ -1,0 +1,201 @@
+#!/bin/bash
+
+######################################################################
+#     Telegram helper - shared by the installer, menu and cronjobs   #
+#                                                                    #
+#  The bot token and chat id are stored once in TG_CONF and reused   #
+#  by every notification (SSH login, services, disk, CrowdSec).      #
+######################################################################
+
+# shellcheck disable=SC2034
+
+TG_DIR="/var/hostvn/telegram"
+TG_CONF="${TG_DIR}/telegram.conf"
+TG_SSH_FILE="/etc/profile.d/ssh-notify.sh"
+TG_CRON_SERVICE="/var/hostvn/menu/cronjob/telegram_service"
+TG_CRON_DISK="/var/hostvn/menu/cronjob/telegram_disk"
+
+############################################
+# Credentials
+############################################
+tg_valid_token() {
+    [[ "$1" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]
+}
+
+tg_valid_chat_id() {
+    [[ "$1" =~ ^-?[0-9]+$ || "$1" =~ ^@[A-Za-z0-9_]+$ ]]
+}
+
+# Load TELEGRAM_ID / TELEGRAM_TOKEN, returns 1 when Telegram is not configured.
+tg_load() {
+    TELEGRAM_ID=""
+    TELEGRAM_TOKEN=""
+    [ -r "${TG_CONF}" ] || return 1
+    TELEGRAM_ID=$(grep -m1 '^TELEGRAM_ID=' "${TG_CONF}" | cut -f2- -d'=' | tr -d '"')
+    TELEGRAM_TOKEN=$(grep -m1 '^TELEGRAM_TOKEN=' "${TG_CONF}" | cut -f2- -d'=' | tr -d '"')
+    tg_valid_token "${TELEGRAM_TOKEN}" && tg_valid_chat_id "${TELEGRAM_ID}"
+}
+
+tg_configured() {
+    (tg_load)
+}
+
+# tg_save <chat_id> <token>
+tg_save() {
+    mkdir -p "${TG_DIR}"
+    chmod 700 "${TG_DIR}"
+    (
+        umask 077
+        printf 'TELEGRAM_ID="%s"\nTELEGRAM_TOKEN="%s"\n' "$1" "$2" >"${TG_CONF}"
+    )
+    chmod 600 "${TG_CONF}"
+}
+
+############################################
+# Send
+############################################
+# tg_send <token> <chat_id> <text>
+tg_send() {
+    local res
+    res=$(curl -s --max-time 10 "https://api.telegram.org/bot${1}/sendMessage" \
+        --data-urlencode "chat_id=${2}" \
+        --data-urlencode "disable_web_page_preview=1" \
+        --data-urlencode "text=${3}" 2>/dev/null)
+    [[ "${res}" == *'"ok":true'* ]]
+}
+
+# tg_notify <text> : send with the saved credentials
+tg_notify() {
+    tg_load || return 1
+    tg_send "${TELEGRAM_TOKEN}" "${TELEGRAM_ID}" "$1"
+}
+
+tg_server_name() {
+    local ip=""
+    [ -r /var/hostvn/ipaddress ] && ip=$(grep -w IPADDRESS /var/hostvn/ipaddress | cut -f2 -d'=')
+    [ -z "${ip}" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "$(hostname) (${ip})"
+}
+
+# Ask for the token and chat id until a test message goes through.
+# Sets TELEGRAM_TOKEN / TELEGRAM_ID. Returns 1 when the user gives up (empty token).
+tg_prompt() {
+    local token id
+    echo "Huong dan:"
+    echo "  1. Chat voi @BotFather, go /newbot de tao bot va lay Bot Token."
+    echo "  2. Mo bot vua tao va bam Start (bot chi gui duoc tin khi ban da Start)."
+    echo "  3. Chat voi @userinfobot de lay Chat ID (ID group bat dau bang dau -)."
+    echo ""
+    while true; do
+        read -r -p "Nhap vao Telegram Bot Token (Enter de bo qua): " token
+        if [ -z "${token}" ]; then
+            return 1
+        fi
+        read -r -p "Nhap vao Telegram Chat ID: " id
+        if ! tg_valid_token "${token}"; then
+            echo "Bot Token khong dung dinh dang (vi du: 123456789:AAxxxxxxxx). Vui long nhap lai."
+            continue
+        fi
+        if ! tg_valid_chat_id "${id}"; then
+            echo "Chat ID khong dung dinh dang (vi du: 123456789 hoac -1001234567890). Vui long nhap lai."
+            continue
+        fi
+        if tg_send "${token}" "${id}" "[$(hostname)] Ket noi Telegram thanh cong."; then
+            TELEGRAM_TOKEN="${token}"
+            TELEGRAM_ID="${id}"
+            echo "Da gui tin nhan thu, hay kiem tra Telegram."
+            return 0
+        fi
+        echo "Khong gui duoc tin nhan thu. Kiem tra lai Token, Chat ID va chac chan ban da bam Start voi bot."
+    done
+}
+
+# Make sure credentials exist: load them or ask and save. Returns 1 when unavailable.
+tg_require() {
+    tg_load && return 0
+    tg_prompt || return 1
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+}
+
+############################################
+# Cron helpers
+############################################
+_tg_cron_has() {
+    crontab -u root -l 2>/dev/null | grep -q -- "$1"
+}
+
+_tg_cron_add() {
+    _tg_cron_has "$1" && return 0
+    {
+        crontab -u root -l 2>/dev/null
+        echo "*/5 * * * * bash $1 >/dev/null 2>&1"
+    } | crontab -u root -
+}
+
+_tg_cron_del() {
+    _tg_cron_has "$1" || return 0
+    crontab -u root -l 2>/dev/null | grep -v -- "$1" | crontab -u root -
+}
+
+############################################
+# Notifications
+############################################
+tg_ssh_enabled() {
+    [ -f "${TG_SSH_FILE}" ]
+}
+
+tg_ssh_enable() {
+    cat >"${TG_SSH_FILE}" <<'END'
+# Telegram notification on SSH login (hostvn)
+if [ -n "$SSH_CLIENT" ] && [ -n "$BASH_VERSION" ] && [ -r /var/hostvn/telegram/telegram.conf ]; then
+    ( ( . /var/hostvn/menu/helpers/telegram && tg_ssh_login_notify ) >/dev/null 2>&1 & )
+fi
+END
+    chmod 644 "${TG_SSH_FILE}"
+}
+
+tg_ssh_disable() {
+    rm -f "${TG_SSH_FILE}"
+}
+
+# Runs inside the login shell (see TG_SSH_FILE)
+tg_ssh_login_notify() {
+    local ip port org country
+    ip=$(echo "${SSH_CLIENT}" | awk '{print $1}')
+    port=$(echo "${SSH_CLIENT}" | awk '{print $3}')
+    org=$(curl -s --max-time 5 "https://ipinfo.io/${ip}/org" 2>/dev/null | head -n1)
+    country=$(curl -s --max-time 5 "https://ipinfo.io/${ip}/country" 2>/dev/null | head -n1)
+    # ipinfo answers with a JSON error for private addresses
+    [[ "${org}" == *"{"* ]] && org=""
+    [[ "${country}" == *"{"* ]] && country=""
+    tg_notify "$(date "+%d %b %Y %H:%M"): ${USER} dang nhap SSH vao $(tg_server_name) tu ${ip} ${org} ${country} - port ${port}"
+}
+
+tg_service_enabled() {
+    _tg_cron_has "${TG_CRON_SERVICE}" || _tg_cron_has "servicesNotify"
+}
+
+tg_service_enable() {
+    _tg_cron_add "${TG_CRON_SERVICE}"
+}
+
+tg_service_disable() {
+    _tg_cron_del "${TG_CRON_SERVICE}"
+    # files created by versions <= 1.0.0
+    _tg_cron_del "servicesNotify"
+    rm -f "${TG_DIR}/servicesNotify.sh"
+}
+
+tg_disk_enabled() {
+    _tg_cron_has "${TG_CRON_DISK}" || _tg_cron_has "diskNotify"
+}
+
+tg_disk_enable() {
+    _tg_cron_add "${TG_CRON_DISK}"
+}
+
+tg_disk_disable() {
+    _tg_cron_del "${TG_CRON_DISK}"
+    _tg_cron_del "diskNotify"
+    rm -f "${TG_DIR}/diskNotify.sh"
+}

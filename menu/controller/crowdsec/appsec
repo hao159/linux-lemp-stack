@@ -1,0 +1,61 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/crowdsec
+
+_run(){
+    if ! cs_installed; then
+        ALERT=$(printf "%s\n" "${RED}Ban chua cai dat CrowdSec.${NC}")
+        return
+    fi
+
+    if cs_appsec_enabled; then
+        read -r -p "AppSec dang bat. Ban co muon tat AppSec khong ? (y/n) " prompt_appsec
+        if [[ "${prompt_appsec}" =~ ^([yY])$ ]]; then
+            cs_appsec_disable
+            ALERT=$(printf "%s\n" "${GREEN}Tat AppSec thanh cong.${NC}")
+        else
+            ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}")
+        fi
+    else
+        read -r -p "AppSec dang tat. Ban co muon bat AppSec khong ? (y/n) " prompt_appsec
+        if [[ "${prompt_appsec}" =~ ^([yY])$ ]] && ! nginx_has_lua; then
+            printf "%s\n" "${RED}Nginx hien tai chua co Lua, script se build lai Nginx (mat vai phut, Nginx khoi dong lai 1 lan).${NC}"
+            read -r -p "Ban co dong y build lai Nginx khong ? (y/n) " prompt_appsec
+            if [[ "${prompt_appsec}" =~ ^([yY])$ ]]; then
+                printf "%s\n" "${GREEN}Dang build lai Nginx kem Lua, vui long cho...${NC}"
+                if ! cs_nginx_rebuild_lua; then
+                    ALERT=$(printf "%s\n" "${RED}Build Nginx that bai, Nginx cu van duoc giu nguyen. Log: /var/log/hostvn/nginx_build.log${NC}")
+                    return
+                fi
+            fi
+        fi
+        if [[ "${prompt_appsec}" =~ ^([yY])$ ]]; then
+            if msg=$(cs_appsec_enable); then
+                ALERT=$(printf "%s\n" "${GREEN}Bat AppSec thanh cong.${NC}")
+            else
+                ALERT=$(printf "%s\n" "${RED}Bat AppSec that bai. ${msg}${NC}")
+            fi
+        else
+            ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}")
+        fi
+    fi
+}
+
+ALERT=""
+msg=""
+prompt_appsec=""
+
+_run
+clear
+printf "%s\n" "${ALERT}"
+menu_crowdsec

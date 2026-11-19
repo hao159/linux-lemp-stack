@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Telegram alert when the root partition is almost full.
+# Cron: */5 * * * *
+
+source /var/hostvn/menu/helpers/telegram
+
+tg_load || exit 0
+
+THRESHOLD=90
+DISK_CURRENT=$(df -P / | awk 'NR==2 {print $5}' | tr -d '%')
+
+if [[ "${DISK_CURRENT}" =~ ^[0-9]+$ ]] && [ "${DISK_CURRENT}" -ge "${THRESHOLD}" ]; then
+    tg_notify "$(date "+%d %b %Y %H:%M"): CANH BAO - VPS $(tg_server_name) da su dung ${DISK_CURRENT}% dung luong."
+fi

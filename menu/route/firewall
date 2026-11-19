@@ -26,6 +26,7 @@ do
     printf "${GREEN}%s${NC}\n" "5. Restart Firewall"
     printf "${GREEN}%s${NC}\n" "6. Disable Firewall"
     printf "${GREEN}%s${NC}\n" "7. Enable Firewall"
+    printf "${GREEN}%s${NC}\n" "8. CrowdSec & AppSec (WAF)"
     #printf "${GREEN}%s${NC}\n" "8. Block country"
     printf "%s ============================%s\n" "${GREEN}" "${NC}"
     read -r -p " ${SELECT_OPTION} " CHOICE
@@ -119,6 +120,7 @@ do
 #            block_country
 #            menu_firewall
 #            ;;
+        8) clear; menu_crowdsec ;;
         0) clear; menu_primary ;;
         *) clear; printf "%s\n"  "${RED}${WRONG_OPTION}${NC}";;
     esac

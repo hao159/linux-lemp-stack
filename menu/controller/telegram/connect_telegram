@@ -10,4 +10,30 @@
 #  Please do not copy under any circumstance for commercial reason!  #
 ######################################################################
 
+source /var/hostvn/menu/helpers/telegram
+source /var/hostvn/menu/helpers/crowdsec
 
+_run(){
+    if tg_load; then
+        printf "%s\n" "${GREEN}Telegram da duoc cau hinh (Chat ID: ${TELEGRAM_ID}). Nhap thong tin moi de thay doi.${NC}"
+    fi
+
+    if ! tg_prompt; then
+        ALERT=$(printf "%s\n" "${RED}Huy cau hinh Telegram.${NC}")
+        return
+    fi
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+
+    # The CrowdSec plugin keeps its own copy of the token
+    if cs_telegram_enabled; then
+        cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" >/dev/null
+    fi
+    ALERT=$(printf "%s\n" "${GREEN}Cau hinh Telegram thanh cong.${NC}")
+}
+
+ALERT=''
+
+_run
+clear
+printf "%s\n" "${ALERT}"
+telegram_notify

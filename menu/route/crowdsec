@@ -1,0 +1,70 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/crowdsec
+
+CHOICE=1
+
+printf "%s=====================================%s\n" "${GREEN}" "${NC}"
+printf "%s      CrowdSec & AppSec (WAF)        %s\n" "${GREEN}" "${NC}"
+printf "%s=====================================%s\n" "${GREEN}" "${NC}"
+
+while [ "${CHOICE}" != "0" ]
+do
+    printf "${GREEN}%s${NC}\n" "1. Cai dat CrowdSec"
+    printf "${GREEN}%s${NC}\n" "2. Bat/Tat AppSec (WAF)"
+    printf "${GREEN}%s${NC}\n" "3. Bat/Tat thong bao Telegram khi chan IP"
+    printf "${GREEN}%s${NC}\n" "4. Trang thai"
+    printf "${GREEN}%s${NC}\n" "5. Danh sach IP bi chan / Chan IP / Go chan IP / IP tin cay"
+    printf "${GREEN}%s${NC}\n" "6. Thay doi thoi gian giu access log (rotate)"
+    printf "${GREEN}%s${NC}\n" "7. Go cai dat CrowdSec"
+    printf "%s ============================%s\n" "${GREEN}" "${NC}"
+    read -r -p " ${SELECT_OPTION} " CHOICE
+    if [ -z "${CHOICE}" ]
+    then
+        CHOICE=1
+        continue
+    fi
+    case ${CHOICE} in
+        1) clear; crowdsec_install ;;
+        2) clear; crowdsec_appsec ;;
+        3) clear; telegram_crowdsec_notify; menu_crowdsec ;;
+        4)
+            clear
+            if cs_installed; then
+                cs_status
+            else
+                printf "%s\n" "${RED}Ban chua cai dat CrowdSec.${NC}"
+            fi
+            echo ""
+            menu_crowdsec
+            ;;
+        5) clear; crowdsec_decisions ;;
+        6)
+            clear
+            if cs_installed; then
+                printf "%s\n" "${GREEN}Access log: ${CS_ACCESS_LOG} - dang giu $(cs_logrotate_days) ngay.${NC}"
+                cs_prompt_rotate_days
+                cs_logrotate_set "${CS_ROTATE_DAYS}"
+                cs_access_log_enable
+                clear
+                printf "%s\n" "${GREEN}Access log se duoc giu ${CS_ROTATE_DAYS} ngay.${NC}"
+            else
+                printf "%s\n" "${RED}Ban chua cai dat CrowdSec.${NC}"
+            fi
+            menu_crowdsec
+            ;;
+        7) clear; crowdsec_uninstall ;;
+        0) clear; menu_firewall ;;
+        *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+    esac
+done

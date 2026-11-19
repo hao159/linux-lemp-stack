@@ -1,0 +1,101 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/crowdsec
+
+_select_action(){
+    PS3="Nhap vao lua chon cua ban [ 1 - 6 ]: "
+    options=("Danh sach IP bi chan" "Chan IP" "Go chan IP" "Them IP tin cay (khong bao gio bi chan)" "Danh sach IP tin cay" "Cancel")
+    select opt in "${options[@]}"; do
+        case $REPLY in
+        1) action="list"; break ;;
+        2) action="ban"; break ;;
+        3) action="unban"; break ;;
+        4) action="allow"; break ;;
+        5) action="allow_list"; break ;;
+        6) action="cancel"; break ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long chon lai." ;;
+        esac
+    done
+}
+
+_input_ip(){
+    ip=""
+    read -r -p "Nhap vao dia chi IP: " ip
+    # IPv4, IPv6 or CIDR range
+    if [[ ! "${ip}" =~ ^[0-9a-fA-F:.]+(/[0-9]{1,3})?$ ]]; then
+        ip=""
+        ALERT=$(printf "%s\n" "${RED}Dia chi IP khong dung dinh dang.${NC}")
+    fi
+}
+
+_run(){
+    if ! cs_installed; then
+        ALERT=$(printf "%s\n" "${RED}Ban chua cai dat CrowdSec.${NC}")
+        return
+    fi
+
+    _select_action
+    case ${action} in
+    list)
+        clear
+        cscli decisions list
+        echo ""
+        ;;
+    ban)
+        _input_ip
+        if [ -n "${ip}" ]; then
+            if cscli decisions add --ip "${ip}" --duration 24h --reason "hostvn manual ban" >/dev/null 2>&1; then
+                ALERT=$(printf "%s\n" "${GREEN}Da chan IP ${ip} trong 24 gio.${NC}")
+            else
+                ALERT=$(printf "%s\n" "${RED}Khong chan duoc IP ${ip}.${NC}")
+            fi
+        fi
+        ;;
+    unban)
+        _input_ip
+        if [ -n "${ip}" ]; then
+            cscli decisions delete --ip "${ip}" >/dev/null 2>&1
+            ALERT=$(printf "%s\n" "${GREEN}Da go chan IP ${ip}.${NC}")
+        fi
+        ;;
+    allow)
+        _input_ip
+        if [ -n "${ip}" ]; then
+            if cs_allow_ip "${ip}"; then
+                ALERT=$(printf "%s\n" "${GREEN}Da them ${ip} vao danh sach IP tin cay.${NC}")
+            else
+                ALERT=$(printf "%s\n" "${RED}Khong them duoc ${ip} vao danh sach IP tin cay.${NC}")
+            fi
+        fi
+        ;;
+    allow_list)
+        clear
+        cs_allow_list
+        echo ""
+        ;;
+    *)
+        ALERT=$(printf "%s\n" "${RED}Huy hanh dong.${NC}")
+        ;;
+    esac
+}
+
+ALERT=""
+action=""
+ip=""
+
+_run
+if [ -n "${ALERT}" ]; then
+    clear
+    printf "%s\n" "${ALERT}"
+fi
+menu_crowdsec

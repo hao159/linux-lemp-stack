@@ -521,3 +521,31 @@ telegram_disk_notify(){
 telegram_delete_notify(){
     . /var/hostvn/menu/controller/telegram/delete_notify
 }
+
+telegram_connect(){
+    . /var/hostvn/menu/controller/telegram/connect_telegram
+}
+
+telegram_crowdsec_notify(){
+    . /var/hostvn/menu/controller/telegram/crowdsec_notify
+}
+
+menu_crowdsec(){
+    . /var/hostvn/menu/route/crowdsec
+}
+
+crowdsec_install(){
+    . /var/hostvn/menu/controller/crowdsec/install
+}
+
+crowdsec_appsec(){
+    . /var/hostvn/menu/controller/crowdsec/appsec
+}
+
+crowdsec_decisions(){
+    . /var/hostvn/menu/controller/crowdsec/decisions
+}
+
+crowdsec_uninstall(){
+    . /var/hostvn/menu/controller/crowdsec/uninstall
+}
