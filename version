@@ -17,3 +17,4 @@ lua_resty_lrucache_version=0.15
 lua_cjson_version=2.1.0.20
 lua_resty_http_version=0.17.2
 cs_nginx_bouncer_version=1.2.4
+lua_resty_string_version=0.19

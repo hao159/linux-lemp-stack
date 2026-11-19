@@ -620,6 +620,8 @@ _nginx_build_lua() {
     cp -r "lua-resty-core-${resty_core_v}"/lib/* "${share}/" || return 1
     cp -r "lua-resty-lrucache-${resty_lrucache_v}"/lib/* "${share}/" || return 1
     cp "lua-resty-http-${resty_http_v}"/lib/resty/*.lua "${share}/resty/" || return 1
+    # required by lua-resty-http
+    cp "lua-resty-string-${resty_string_v}"/lib/resty/*.lua "${share}/resty/" || return 1
 
     (cd "lua-cjson-${cjson_v}" &&
         make LUA_INCLUDE_DIR="${lj}/include/luajit-2.1" &&
@@ -628,7 +630,7 @@ _nginx_build_lua() {
 
 nginx_build() {
     local ver="$1" cache_purge_v headers_more_v vts_v module_path="/usr/share/nginx_module"
-    local luajit_v ndk_v lua_module_v resty_core_v resty_lrucache_v cjson_v resty_http_v
+    local luajit_v ndk_v lua_module_v resty_core_v resty_lrucache_v cjson_v resty_http_v resty_string_v
     cache_purge_v=$(get_version ngx_cache_purge_version)
     headers_more_v=$(get_version more_clear_headers_v)
     vts_v=$(get_version nginx_module_vts_v)
@@ -639,10 +641,12 @@ nginx_build() {
     resty_lrucache_v=$(get_version lua_resty_lrucache_version)
     cjson_v=$(get_version lua_cjson_version)
     resty_http_v=$(get_version lua_resty_http_version)
+    resty_string_v=$(get_version lua_resty_string_version)
 
     if [ -z "${ver}" ] || [ -z "${cache_purge_v}" ] || [ -z "${headers_more_v}" ] || [ -z "${vts_v}" ] ||
         [ -z "${luajit_v}" ] || [ -z "${ndk_v}" ] || [ -z "${lua_module_v}" ] || [ -z "${resty_core_v}" ] ||
-        [ -z "${resty_lrucache_v}" ] || [ -z "${cjson_v}" ] || [ -z "${resty_http_v}" ]; then
+        [ -z "${resty_lrucache_v}" ] || [ -z "${cjson_v}" ] || [ -z "${resty_http_v}" ] ||
+        [ -z "${resty_string_v}" ]; then
         echo "Can not read nginx versions from the version file."
         return 1
     fi
@@ -665,11 +669,13 @@ nginx_build() {
     wget -qO- "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${resty_lrucache_v}.tar.gz" | tar -xz
     wget -qO- "https://github.com/openresty/lua-cjson/archive/refs/tags/${cjson_v}.tar.gz" | tar -xz
     wget -qO- "https://github.com/ledgetech/lua-resty-http/archive/refs/tags/v${resty_http_v}.tar.gz" | tar -xz
+    wget -qO- "https://github.com/openresty/lua-resty-string/archive/refs/tags/v${resty_string_v}.tar.gz" | tar -xz
 
     if [ ! -d "nginx-${ver}" ] || [ ! -d ngx_brotli ] || [ ! -d "luajit2-${luajit_v}" ] ||
         [ ! -d "ngx_devel_kit-${ndk_v}" ] || [ ! -d "lua-nginx-module-${lua_module_v}" ] ||
         [ ! -d "lua-resty-core-${resty_core_v}" ] || [ ! -d "lua-resty-lrucache-${resty_lrucache_v}" ] ||
-        [ ! -d "lua-cjson-${cjson_v}" ] || [ ! -d "lua-resty-http-${resty_http_v}" ]; then
+        [ ! -d "lua-cjson-${cjson_v}" ] || [ ! -d "lua-resty-http-${resty_http_v}" ] ||
+        [ ! -d "lua-resty-string-${resty_string_v}" ]; then
         echo "Download nginx source failed."
         return 1
     fi

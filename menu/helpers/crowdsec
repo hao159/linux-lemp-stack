@@ -365,13 +365,18 @@ ${ca}
 init_by_lua_block {
     hostvn_cs_ready = false
     hostvn_admin_port = nil
-    cs = require "crowdsec"
-    local ok, err = cs.init("${CS_BOUNCER_CONF}", "crowdsec-nginx-bouncer/v${ver}")
-    if ok == nil then
-        -- a broken bouncer must not stop the web server
-        ngx.log(ngx.ERR, "[Crowdsec] " .. tostring(err))
+    -- a broken bouncer must not stop the web server
+    local loaded, mod = pcall(require, "crowdsec")
+    if not loaded then
+        ngx.log(ngx.ERR, "[Crowdsec] " .. tostring(mod))
     else
-        hostvn_cs_ready = true
+        cs = mod
+        local ok, err = cs.init("${CS_BOUNCER_CONF}", "crowdsec-nginx-bouncer/v${ver}")
+        if ok == nil then
+            ngx.log(ngx.ERR, "[Crowdsec] " .. tostring(err))
+        else
+            hostvn_cs_ready = true
+        end
     end
     -- phpMyAdmin / admin tools (protected by a password) are not sent to the WAF
     local f = io.open("/var/hostvn/.hostvn.conf", "r")
@@ -507,7 +512,26 @@ END
         return 1
     fi
     systemctl reload nginx
+
+    # "enabled" must mean that a bad request is really refused by Nginx
+    if ! _cs_appsec_verify; then
+        _cs_nginx_lua_off
+        _cs_nginx_reload
+        echo "Nginx khong chan duoc request thu qua AppSec, da hoan tac. Kiem tra error log cua Nginx."
+        return 1
+    fi
     return 0
+}
+
+# A request for <anything>/.env is refused by the AppSec rules, not by the Nginx config
+_cs_appsec_verify() {
+    local i code
+    for i in $(seq 1 15); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1/hostvn-appsec-selftest/.env")
+        [ "${code}" == "403" ] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 cs_appsec_disable() {
