@@ -75,9 +75,11 @@ _install_clamav() {
         clear
         printf "%s\n" "${RED}Ban da cai dat ImunifyAV roi.${NC}"
     else
-        apt-get update -y
-        apt autoremove -y
-        apt-get install clamav clamav-daemon -y
+        if [ "${OS_FAMILY}" == "rhel" ]; then
+            pkg_install clamav clamav-update clamd
+        else
+            pkg_install clamav clamav-daemon
+        fi
         systemctl stop clamav-freshclam
         check_expert_db=$(grep -w "expert" "/etc/clamav/freshclam.conf")
         if [ -z "${check_expert_db}" ]; then
@@ -159,8 +161,11 @@ _uninstall_av() {
     if [ "${av}" == "clamav" ]; then
         if [[ "$(clamscan --version)" =~ .*"ClamAV".* ]]; then
             systemctl stop clamav-freshclam
-            apt-get remove clamav clamav-daemon -y
-            apt autoremove -y
+            if [ "${OS_FAMILY}" == "rhel" ]; then
+                pkg_remove clamav clamav-update clamd
+            else
+                pkg_remove clamav clamav-daemon
+            fi
         else
             clear
             printf "%s\n" "${RED}Ban chua cai dat ClamAV.${NC}"
@@ -172,7 +177,6 @@ _uninstall_av() {
             rm -rf imav-deploy.sh
             rm -rf /usr/share/nginx/private/imav
             rm -rf /var/hostvn/imav
-            apt autoremove -y
         else
             clear
             printf "%s\n" "${RED}Ban chua cai dat ImunifyAV.${NC}"

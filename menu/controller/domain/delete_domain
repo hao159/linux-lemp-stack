@@ -26,6 +26,7 @@ _set_var() {
     username=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
     php_version=$(grep -w "php_version" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
     vhost_config="${VHOST_DIR}/${domain}.conf"
+    site_port=$(_site_port "${domain}")
     php_config_file="/etc/php/${php_version}/fpm/pool.d/${domain}.conf"
 }
 
@@ -97,8 +98,8 @@ _destroy_other() {
     if [ -d "/root/.acme.sh/${domain}" ]; then
         rm -rf "/root/.acme.sh/${domain}"
     fi
-    if [ -d "${PAGESPEED_DIR}/${domain}" ]; then
-        rm -rf "${PAGESPEED_DIR}"/"${domain:?}"
+    if [ -n "${site_port}" ]; then
+        fw_remove_port "${site_port}"
     fi
 
     check_nginx_cache=$(grep -w "${username}" "${NGINX_CONF_DIR}/extra/nginx_cache.conf")

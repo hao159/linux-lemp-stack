@@ -46,18 +46,10 @@ _select_app(){
 }
 
 _install_nextcloud(){
-    wget -O- "${HOMEPAGE_LINK}"/app/nextcloud.tar.gz | tar -xz
-
-    sed -i "s/WEBSITE_DOMAIN/${domain}/g" /home/"${user}"/"${domain}"/public_html/config/config.php
-    sed -i "s/WEBSITE_USER/${user}/g" /home/"${user}"/"${domain}"/public_html/config/config.php
-    sed -i "s/DB_NAME/${db_name}/g" /home/"${user}"/"${domain}"/public_html/config/config.php
-    sed -i "s/DB_USER/${db_user}/g" /home/"${user}"/"${domain}"/public_html/config/config.php
-    sed -i "s/DB_PASSWORD/${db_password}/g" /home/"${user}"/"${domain}"/public_html/config/config.php
-
-    mysql -uadmin -p"${mysql_pwd}" "${db_name}" < nextcloud.sql
-
-    rm -rf nextcloud.sql
-    rm -rf nextcloud.tar.gz
+    wget -qO- https://download.nextcloud.com/server/releases/latest.tar.gz | tar -xz --strip-components=1
+    printf "%s\n" "${GREEN}Da tai Nextcloud. Mo website tren trinh duyet de hoan tat cai dat.${NC}"
+    printf "%s\n" "Database: ${db_name} - User: ${db_user} - Password: ${db_password} - Host: localhost"
+    sleep 5
 }
 
 _install_wordpress(){

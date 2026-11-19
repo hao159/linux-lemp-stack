@@ -11,29 +11,24 @@
 ######################################################################
 
 _run(){
-    OS_VERSION=$(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"')
+    NODE_VERSION=$(get_version nodejs_version)
+    NODE_VERSION=${NODE_VERSION:-22}
     clear
-    echo "node.js & npm installation..."
-    sleep 3
-    if [ "$OS_VERSION" == "20.04" ]; then
-        curl -s https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo apt-key add -
-        curl -sL https://deb.nodesource.com/setup_14.x | sudo -E bash -
-        NODE=/etc/apt/sources.list.d/nodesource.list
-        sudo unlink NODE
-        cat > "$NODE" <<EOF
-        deb https://deb.nodesource.com/node_14.x focal main
-        deb-src https://deb.nodesource.com/node_14.x focal main
-EOF
-        sudo apt-get update
-        sudo apt -y install nodejs
-        sudo apt -y install npm
+    echo "node.js ${NODE_VERSION} & npm installation..."
+    sleep 2
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        curl -fsSL "https://rpm.nodesource.com/setup_${NODE_VERSION}.x" | bash -
     else
-        curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
-        sudo apt-get -y install nodejs
+        curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | bash -
     fi
+    pkg_install nodejs
 
     clear
-    printf "%s\n" "${GREEN}node.js & npm: OK!${NC}"
+    if command -v node >/dev/null 2>&1; then
+        printf "%s\n" "${GREEN}node.js $(node -v) & npm: OK!${NC}"
+    else
+        printf "%s\n" "${RED}Cai dat node.js that bai.${NC}"
+    fi
 }
 
 _run

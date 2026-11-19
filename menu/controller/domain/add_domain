@@ -19,7 +19,81 @@ printf "%sThem domain moi%s\n" "${GREEN}" "${NC}"
 printf "%s===============%s\n" "${GREEN}" "${NC}"
 echo ""
 
+# Website type: normal domain or IP:PORT (dev server)
+_select_site_type() {
+    site_type="domain"
+    site_port=""
+    echo "Lua chon kieu website"
+    PS3='Nhap lua chon cua ban (1-3): '
+    if [ "${install_mode}" == "dev" ]; then
+        options=("IP:PORT (dev server, truy cap bang http://${IPADDRESS}:port)" "Domain" "Cancel")
+    else
+        options=("Domain" "IP:PORT (dev server, truy cap bang http://${IPADDRESS}:port)" "Cancel")
+    fi
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Domain")
+            site_type="domain"
+            break
+            ;;
+        "IP:PORT"*)
+            site_type="port"
+            break
+            ;;
+        "Cancel")
+            site_type="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Ban nhap sai, vui long nhap lai.${NC}" ;;
+        esac
+    done
+}
+
+_input_dev_site() {
+    while true; do
+        read -r -p "Nhap port cho website (1024-65535) [0 = Thoat]: " site_port
+        if [ "${site_port}" == "0" ]; then
+            domain=0
+            return
+        fi
+        if ! valid_port "${site_port}"; then
+            printf "%s\n" "${RED}Port khong hop le, vui long nhap lai.${NC}"
+        elif [[ "${site_port}" == "${admin_port}" || "${site_port}" == "${ssh_port}" || "${site_port}" == "3306" ]]; then
+            printf "%s\n" "${RED}Port nay da duoc he thong su dung, vui long chon port khac.${NC}"
+        elif _site_port_used "${site_port}" || check_port_exists "${site_port}"; then
+            printf "%s\n" "${RED}Port ${site_port} dang duoc su dung, vui long chon port khac.${NC}"
+        else
+            break
+        fi
+    done
+
+    while true; do
+        read -r -p "Nhap ten project (chu thuong, so, dau gach ngang) [Enter = site${site_port}]: " site_name
+        site_name=$(echo "${site_name}" | tr '[:upper:]' '[:lower:]')
+        if [ -z "${site_name}" ]; then
+            site_name="site${site_port}"
+        fi
+        if [[ "${site_name}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            break
+        fi
+        printf "%s\n" "${RED}Ten project khong hop le, vui long nhap lai.${NC}"
+    done
+
+    # Internal identifier of the website (folder, vhost and config file names)
+    domain="${site_name}.test"
+}
+
 _input() {
+    _select_site_type
+    if [ "${site_type}" == "cancel" ]; then
+        domain=0
+        return
+    fi
+    if [ "${site_type}" == "port" ]; then
+        _input_dev_site
+        return
+    fi
+
     false
     while [ $? -eq 1 ]; do
         read -r -p "Nhap domain (Khong co www) [0 = Thoat]: " domain
@@ -122,30 +196,16 @@ _laravel_auto_install_confirm() {
 
 _laravel_auto_install() {
     if [[ $prompt_inst_lar =~ ^([yY])$ ]]; then
-        laravel_version="8"
+        laravel_version="12"
         echo "Lua chon phien ban laravel ban muon cai dat ?"
-        PS3='Nhap lua chon cua ban (1-2): '
-        options=("8" "7" "6" "5")
+        PS3='Nhap lua chon cua ban: '
+        options=("12" "11" "10" "9" "8")
         select opt in "${options[@]}"; do
-            case $opt in
-            "8")
-                laravel_version="8"
+            if [ -n "${opt}" ]; then
+                laravel_version="${opt}"
                 break
-                ;;
-            "7")
-                laravel_version="7"
-                break
-                ;;
-            "6")
-                laravel_version="6"
-                break
-                ;;
-            "5")
-                laravel_version="5"
-                break
-                ;;
-            *) printf "%s\n" "${RED}Ban nhap sai, vui long nhap lai.${NC}" ;;
-            esac
+            fi
+            printf "%s\n" "${RED}Ban nhap sai, vui long nhap lai.${NC}"
         done
 
         _cd_dir "/home/${user}/${domain}"
@@ -159,7 +219,7 @@ EOF
         cat >>"/home/$user/$domain/public_html/robots.txt" <<END
 User-agent: *
 END
-        sed -i "s|APP_URL=http://localhost|APP_URL=http://${domain}|g" /home/"$user"/"$domain"/public_html/.env
+        sed -i "s|APP_URL=http://localhost|APP_URL=${site_url}|g" /home/"$user"/"$domain"/public_html/.env
         sed -i "s|DB_DATABASE=laravel|DB_DATABASE=${db_name}|g" /home/"$user"/"$domain"/public_html/.env
         sed -i "s|DB_USERNAME=root|DB_USERNAME=${db_user}|g" /home/"$user"/"$domain"/public_html/.env
         sed -i "s|DB_PASSWORD=|DB_PASSWORD=${db_pass}|g" /home/"$user"/"$domain"/public_html/.env
@@ -200,7 +260,7 @@ define( 'WP_MAX_MEMORY_LIMIT', '128M' );
 PHP
 
         # Install WordPress
-        wp core install --url="${domain}" --title="${site_name}" --admin_user="${admin_user}" --admin_password="${admin_pwd}" --admin_email="${admin_email}" --allow-root
+        wp core install --url="${site_url}" --title="${site_name}" --admin_user="${admin_user}" --admin_password="${admin_pwd}" --admin_email="${admin_email}" --allow-root
 
         if [ -f "/home/$user/$domain/public_html/robots.txt" ]; then
             rm -rf /home/"$user"/"$domain"/public_html/robots.txt
@@ -381,13 +441,17 @@ _create_php_config() {
 _create_vhost() {
     if [ -f "${CUSTOM_DIR}/${SOURCE}.conf" ]; then
         cp "${CUSTOM_DIR}"/"${SOURCE}".conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     elif [ -f "${TEMPLATE_DIR}/${SOURCE}.conf" ]; then
         cp "${TEMPLATE_DIR}"/"${SOURCE}".conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     else
         if [ -f "${CUSTOM_DIR}/default.conf" ]; then
             cp "${CUSTOM_DIR}"/default.conf "${VHOST_DIR}"/"${domain}".conf
+            _apply_dev_port "${domain}"
         else
             cp "${TEMPLATE_DIR}"/default.conf "${VHOST_DIR}"/"${domain}".conf
+            _apply_dev_port "${domain}"
         fi
     fi
 
@@ -467,6 +531,9 @@ disable_user_api=yes
 disable_file_edit=no
 lock_folder=no
 END
+    if [ -n "${site_port}" ]; then
+        echo "port=${site_port}" >>"${USER_DIR}/.${domain}.conf"
+    fi
     chmod 600 "${USER_DIR}"/."${domain}".conf
 }
 
@@ -484,7 +551,12 @@ _show_info() {
     echo ""
     printf "Ban đa them domain thanh cong. Hay luu lai thong tin de su dung\n"
     echo "---------------------------------------------------------------"
-    printf "* Domain                     : %s\n" "${domain}"
+    if [ -n "${site_port}" ]; then
+        printf "* URL                        : %s\n" "${site_url}"
+        printf "* Ten website (ID)           : %s\n" "${domain}"
+    else
+        printf "* Domain                     : %s\n" "${domain}"
+    fi
     if [[ "${prompt_create_db}" =~ ^([yY])$ ]]; then
         printf "* DB_Name                    : %s\n" "${db_name}"
         printf "* DB_User                    : %s\n" "${db_user}"
@@ -563,6 +635,11 @@ _run() {
             _set_owner
             _save_user_config
 
+            if [ -n "${site_port}" ]; then
+                _apply_dev_port "${domain}"
+                fw_allow_port "${site_port}"
+            fi
+
             if nginx -t; then
                 _restart_service
                 clear
@@ -586,6 +663,9 @@ _run() {
 ALERT=""
 SOURCE=""
 domain=""
+site_type="domain"
+site_port=""
+site_url=""
 prompt_prefix=""
 prompt_inst_wp=""
 prompt_create_db=""
@@ -597,6 +677,11 @@ if [ -z "${ALERT}" ]; then
         echo ""
     else
         domain=${domain//www.}
+        if [ -n "${site_port}" ]; then
+            site_url="http://${IPADDRESS}:${site_port}"
+        else
+            site_url="http://${domain}"
+        fi
         _set_var "$@"
         if [[ "${php2_release}" == "yes" ]]; then
             _select_php

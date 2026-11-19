@@ -16,11 +16,7 @@ source /var/hostvn/menu/helpers/function
 _set_var(){
     #https://www.howtoforge.com/tutorial/linux-grep-command/
     #https://stackoverflow.com/a/6284370
-    PHPMYADMIN_VERSION=$(curl -s "${UPDATE_LINK}"/version | grep "phpmyadmin_version=" | cut -f2 -d'=')
-
-    if [ "${php1_version}" == '5.6' ]; then
-        PHPMYADMIN_VERSION=$(curl -s "${UPDATE_LINK}"/version | grep "phpmyadmin4_version=" | cut -f2 -d'=')
-    fi
+    PHPMYADMIN_VERSION=$(get_version phpmyadmin_version)
 }
 
 _update(){
@@ -32,15 +28,15 @@ _update(){
     fi
     _cd_dir "${DEFAULT_DIR_TOOL}"
     rm -rf phpmyadmin
-    wget -O- "${HOMEPAGE_LINK}"/modules/phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.tar.gz | tar -xz
+    wget -qO- https://files.phpmyadmin.net/phpMyAdmin/"${PHPMYADMIN_VERSION}"/phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.tar.gz | tar -xz
 
     mv phpMyAdmin-"${PHPMYADMIN_VERSION}"-english phpmyadmin
     rm -rf "${DEFAULT_DIR_TOOL}"/phpmyadmin/setup
-    chown -R nginx. "${DEFAULT_DIR_TOOL}"/phpmyadmin
+    chown -R nginx:nginx "${DEFAULT_DIR_TOOL}"/phpmyadmin
 }
 
 _config_phpmyadmin(){
-    blowfish_secret=$(date +%s%N | sha256sum | base64 | head -c 82)
+    blowfish_secret=$(date +%s%N | sha256sum | head -c 32)
     rm -rf "${DEFAULT_DIR_TOOL}"/phpmyadmin/setup
     mkdir -p "${DEFAULT_DIR_TOOL}"/phpmyadmin/tmp
 
@@ -56,7 +52,6 @@ ${declare}
 \$i++;
 \$cfg['Servers'][\$i]['auth_type'] = 'cookie';
 \$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['connect_type'] = 'tcp';
 \$cfg['Servers'][\$i]['compress'] = false;
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
 \$cfg['UploadDir'] = '';

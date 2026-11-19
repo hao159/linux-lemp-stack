@@ -16,13 +16,17 @@ source /var/hostvn/menu/helpers/function
 _recreate_vhost() {
     if [ -f "${CUSTOM_DIR}/${SOURCE}.conf" ]; then
         cp "${CUSTOM_DIR}"/"${SOURCE}".conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     elif [ -f "${TEMPLATE_DIR}/${SOURCE}.conf" ]; then
         cp "${TEMPLATE_DIR}"/"${SOURCE}".conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     else
         if [ -f "${CUSTOM_DIR}/default.conf" ]; then
             cp "${CUSTOM_DIR}"/default.conf "${VHOST_DIR}"/"${domain}".conf
+            _apply_dev_port "${domain}"
         else
             cp "${TEMPLATE_DIR}"/default.conf "${VHOST_DIR}"/"${domain}".conf
+            _apply_dev_port "${domain}"
         fi
     fi
 

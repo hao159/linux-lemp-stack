@@ -1,0 +1,11 @@
+script_version=1.0.0
+php_list=php8.5 php8.4 php8.3 php8.2 php8.1 php8.0 php7.4
+mariadb_version=11.8
+phpmyadmin_version=5.2.3
+nginx_version=1.30.7
+nginx_new_version=1.30.7
+ngx_cache_purge_version=3.0.4
+more_clear_headers_v=0.42
+nginx_module_vts_v=0.2.7
+nodejs_version=22
+list_plugins=really-simple-ssl wps-hide-login wps-limit-login seo-by-rank-math

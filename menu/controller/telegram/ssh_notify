@@ -57,7 +57,7 @@ _run(){
 
     if [ -z "$ALERT" ]; then
         if [ ! -f /usr/bin/jq ]; then
-            apt update -y && apt install jq -y
+            pkg_install jq
             clear
         fi
         _create_ssh_notify_file

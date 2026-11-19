@@ -214,6 +214,13 @@ _copy_vhost() {
 
     sed -i "s|${source_domain}|${clone_domain}|g" "${VHOST_DIR}"/"${clone_domain}".conf
     sed -i "s|${user_source}|${user_clone}|g" "${VHOST_DIR}"/"${clone_domain}".conf
+
+    # Dev sites (IP:PORT): the clone keeps its own port
+    source_port=$(_site_port "${source_domain}")
+    clone_port=$(_site_port "${clone_domain}")
+    if [ -n "${source_port}" ] && [ -n "${clone_port}" ]; then
+        sed -i "s|listen ${source_port};|listen ${clone_port};|g" "${VHOST_DIR}"/"${clone_domain}".conf
+    fi
     sed -i '/htpasswd.conf/d' "${VHOST_DIR}"/"${clone_domain}".conf
     sed -i '/protect_dir.conf/d' "${VHOST_DIR}"/"${clone_domain}".conf
 
@@ -320,6 +327,14 @@ else
     if [ -z "${ALERT}" ]; then
         clear
         _select_clone_domain
+        # A domain website and an IP:PORT website have different vhost layouts
+        source_is_dev="no"
+        clone_is_dev="no"
+        [ -n "$(_site_port "${source_domain}")" ] && source_is_dev="yes"
+        [ -n "$(_site_port "${clone_domain}")" ] && clone_is_dev="yes"
+        if [ -n "${clone_domain}" ] && [ "${source_is_dev}" != "${clone_is_dev}" ]; then
+            ALERT="${RED}Khong the clone giua website ten mien va website IP:PORT.${NC}"
+        fi
         if [[ -z "${source_domain}" && -z "${ALERT}" ]]; then
             clear
             printf "%s\n" "${RED}Ban da chon huy thao tac${NC}"

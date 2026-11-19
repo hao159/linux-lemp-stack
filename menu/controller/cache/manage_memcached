@@ -16,7 +16,7 @@ source /var/hostvn/menu/validate/rule
 
 CHOICE=1
 memcached_status=$(pgrep memcached >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${GREEN}Khong hoat dong${NC}")
-if [ ! -f "/etc/memcached.conf" ]; then
+if ! memcached_installed; then
     memcached_status="Chua cai dat"
 fi
 
@@ -39,7 +39,7 @@ while [ "${CHOICE}" != "0" ]; do
     fi
     case ${CHOICE} in
     1)
-        if [ ! -f "/etc/memcached.conf" ]; then
+        if ! memcached_installed; then
             clear
             printf "${RED}%s${NC}\n" "Memcached chua duoc cai dat."
         elif service_running "redis"; then
@@ -87,11 +87,8 @@ while [ "${CHOICE}" != "0" ]; do
         ;;
     3) cache_install_memcached ;;
     4)
-        if [ -f "/etc/memcached.conf" ]; then
-            systemctl stop memcached
-            apt-get purge --auto-remove memcached -y
-            apt autoremove -y
-            rm -rf /etc/memcached.conf
+        if memcached_installed; then
+            memcached_remove
             cron_exists=$(crontab -l | grep -w 'memcached')
             if [ -n "${cron_exists}" ]; then
                 crontab -u root -l | grep -v "memcached" | crontab -u root -

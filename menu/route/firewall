@@ -38,8 +38,7 @@ do
         1) clear;
             read -r -p "${lang_input_port}: " port
             if [[ ${port} =~ ^-?[0-9]+$ ]]; then
-                ufw allow "${port}"/tcp
-                systemctl restart ufw
+                fw_allow_port "${port}"
                 notify="${GREEN}${lang_open_port_success}.${NC}"
             else
                 notify="${RED}${lang_port_wrong_format}${NC}"
@@ -61,7 +60,7 @@ do
             read -r -p "${lang_enter_ip}: " ip
             fail2ban-client set sshd banip "${ip}"
             fail2ban-client set nginx-http-auth banip "${ip}"
-            ufw deny from "${ip}" to any
+            fw_block_ip "${ip}"
             clear
             printf "%s\n" "${GREEN}${lang_block_ip_success}.${NC}"
             echo ""
@@ -71,7 +70,7 @@ do
             read -r -p "${lang_enter_ip}: " ip
             fail2ban-client set sshd unbanip "${ip}"
             fail2ban-client set nginx-http-auth unbanip "${ip}"
-            ufw delete deny from "${ip}"
+            fw_unblock_ip "${ip}"
             clear
             printf "%s\n" "${GREEN}${lang_unblock_ip_success}.${NC}"
             echo ""
@@ -86,7 +85,7 @@ do
 #            menu_firewall
 #            ;;
         5)
-            systemctl restart ufw
+            fw_reload
             systemctl restart fail2ban
             clear
             printf "%s\n" "${GREEN}${lang_restart_firewall_success}.${NC}"
@@ -94,26 +93,22 @@ do
             menu_firewall
             ;;
         6)
-            systemctl stop ufw
-            systemctl disable ufw
+            fw_disable
             systemctl stop fail2ban
             systemctl disable fail2ban
-            ufw disable << EOF
-y
-EOF
             clear
             printf "%s\n" "${GREEN}${lang_stop_firewall_success}.${NC}"
             echo ""
             menu_firewall
             ;;
         7)
-            systemctl start ufw
-            systemctl enable ufw
+            fw_enable
+            fw_allow_port "${ssh_port}"
+            fw_allow_port 80
+            fw_allow_port 443
+            fw_allow_port "${admin_port}"
             systemctl restart fail2ban
             systemctl enable fail2ban
-            ufw enable << EOF
-y
-EOF
             clear
             printf "%s\n" "${GREEN}Bat Firewall thanh cong.${NC}"
             echo ""

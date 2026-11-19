@@ -223,7 +223,7 @@ if [[ -z "${action}" || "${action}" == "cancel" ]]; then
     clear
     printf "%s\n" "${RED}${lang_cancel_action}${NC}"
 else
-    _select_domain
+    _select_real_domain
 
     if [[ -z "${domain}" && -z "${ALERT}" ]]; then
         clear

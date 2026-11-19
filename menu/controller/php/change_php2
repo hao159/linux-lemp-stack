@@ -29,14 +29,10 @@ _confirm(){
 }
 
 _set_var(){
-    MODULE_LINK="${HOMEPAGE_LINK}/modules"
     #https://www.howtoforge.com/tutorial/linux-grep-command/
     #https://stackoverflow.com/a/6284370
-    IG_BINARY_VERSION=$(curl -s "${UPDATE_LINK}"/version | grep -w "igbinary_version" | cut -f2 -d'=')
-    PHP_MEMCACHED_VERSION=$(curl -s "${UPDATE_LINK}"/version | grep -w "php_memcached_version" | cut -f2 -d'=')
-    PHP_REDIS_VERSION=$(curl -s "${UPDATE_LINK}"/version | grep -w "php_redis_version" | cut -f2 -d'=')
     # shellcheck disable=SC2207
-    PHP_LIST=($(curl -s "${UPDATE_LINK}"/version | grep "php_list=" | cut -f2 -d'='))
+    PHP_LIST=($(get_version php_list))
 
     PHP2_VERSION_OLD=$(grep -w "php2_version" "${FILE_INFO}" | cut -f2 -d'=')
     PHP2_OLD_CLI_PATH="/etc/php/${PHP2_VERSION_OLD}/cli/conf.d"
@@ -85,170 +81,32 @@ _select_php_ver(){
 }
 
 _remove_old_php(){
-    apt -y purge php"${PHP2_VERSION_OLD}" php"${PHP2_VERSION_OLD}"-fpm php"${PHP2_VERSION_OLD}"-ldap php"${PHP2_VERSION_OLD}"-zip \
-        php"${PHP2_VERSION_OLD}"-cli php"${PHP2_VERSION_OLD}"-mysql php"${PHP2_VERSION_OLD}"-gd php"${PHP2_VERSION_OLD}"-xml \
-        php"${PHP2_VERSION_OLD}"-mbstring php"${PHP2_VERSION_OLD}"-common php"${PHP2_VERSION_OLD}"-soap php"${PHP2_VERSION_OLD}"-json \
-        php"${PHP2_VERSION_OLD}"-curl php"${PHP2_VERSION_OLD}"-bcmath php"${PHP2_VERSION_OLD}"-snmp php"${PHP2_VERSION_OLD}"-pspell \
-        php"${PHP2_VERSION_OLD}"-gmp php"${PHP2_VERSION_OLD}"-intl php"${PHP2_VERSION_OLD}"-imap php"${PHP2_VERSION_OLD}"-enchant \
-        php"${PHP2_VERSION_OLD}"-xmlrpc php"${PHP2_VERSION_OLD}"-tidy php"${PHP2_VERSION_OLD}"-opcache php"${PHP2_VERSION_OLD}"-cli \
-        php"${PHP2_VERSION_OLD}"-dev php"${PHP2_VERSION_OLD}"-imagick php"${PHP2_VERSION_OLD}"-sqlite3
-    apt autoremove -y
-
-    rm -rf /etc/php/"${PHP2_VERSION_OLD}"
-
-    if [ -f "/usr/lib/systemd/system/php${PHP2_VERSION_OLD}-fpm.service" ]; then
-        rm -rf /usr/lib/systemd/system/php"${PHP2_VERSION_OLD}"-fpm.service
-    fi
-
-    if [ -f "/lib/systemd/system/php${PHP2_VERSION_OLD}-fpm.service" ]; then
-        rm -rf /lib/systemd/system/php"${PHP2_VERSION_OLD}"-fpm.service
-    fi
+    php_remove "${PHP2_VERSION_OLD}"
 }
 
 _install_php(){
     systemctl stop php"${PHP2_VERSION_OLD}"-fpm
-    systemctl disable php"${PHP2_VERSION_OLD}"-fpm
+    systemctl disable "$(php_service "${PHP2_VERSION_OLD}")"
 
-    apt -y install php"${PHP2_VERSION_NEW}" php"${PHP2_VERSION_NEW}"-fpm php"${PHP2_VERSION_NEW}"-ldap php"${PHP2_VERSION_NEW}"-zip \
-        php"${PHP2_VERSION_NEW}"-cli php"${PHP2_VERSION_NEW}"-mysql php"${PHP2_VERSION_NEW}"-gd php"${PHP2_VERSION_NEW}"-xml \
-        php"${PHP2_VERSION_NEW}"-mbstring php"${PHP2_VERSION_NEW}"-common php"${PHP2_VERSION_NEW}"-soap \
-        php"${PHP2_VERSION_NEW}"-curl php"${PHP2_VERSION_NEW}"-bcmath php"${PHP2_VERSION_NEW}"-snmp php"${PHP2_VERSION_NEW}"-pspell \
-        php"${PHP2_VERSION_NEW}"-gmp php"${PHP2_VERSION_NEW}"-intl php"${PHP2_VERSION_NEW}"-imap php"${PHP2_VERSION_NEW}"-enchant \
-        php"${PHP2_VERSION_NEW}"-xmlrpc php"${PHP2_VERSION_NEW}"-tidy php"${PHP2_VERSION_NEW}"-opcache php"${PHP2_VERSION_NEW}"-cli \
-        php"${PHP2_VERSION_NEW}"-dev php"${PHP2_VERSION_NEW}"-imagick php"${PHP2_VERSION_NEW}"-sqlite3
-
-        if [ "${PHP2_VERSION_NEW}" != "8.0" ]; then
-            apt -y install php"${PHP2_VERSION_NEW}"-json
-        fi
-
-        if [ "${PHP2_VERSION_NEW}" == "5.6" ]; then
-            apt -y install php5.6-mcrypt
-        fi
-
-        php2_service_file_1="/usr/lib/systemd/system/php${PHP2_VERSION_NEW}-fpm.service"
-        if [ -f "${php2_service_file_1}" ]; then
-            sed -i '/ExecReload=/a LimitNOFILE=65535' "${php2_service_file_1}"
-            sed -i '/ExecReload=/a LimitMEMLOCK=infinity' "${php2_service_file_1}"
-            sed -i '/LimitNOFILE=65535/a PrivateTmp=true' "${php2_service_file_1}"
-            sed -i '/PrivateTmp=true/a ProtectKernelModules=true' "${php2_service_file_1}"
-            sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' "${php2_service_file_1}"
-            sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' "${php2_service_file_1}"
-            sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' "${php2_service_file_1}"
-            sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' "${php2_service_file_1}"
-            systemctl daemon-reload
-        fi
-
-        php2_service_file_2="/lib/systemd/system/php${PHP2_VERSION_NEW}-fpm.service"
-        if [ -f "php2_service_file_2" ]; then
-            sed -i '/ExecReload=/a LimitNOFILE=65535' "${php2_service_file_2}"
-            sed -i '/ExecReload=/a LimitMEMLOCK=infinity' "${php2_service_file_2}"
-            sed -i '/LimitNOFILE=65535/a PrivateTmp=true' "${php2_service_file_2}"
-            sed -i '/PrivateTmp=true/a ProtectKernelModules=true' "${php2_service_file_2}"
-            sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' "${php2_service_file_2}"
-            sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' "${php2_service_file_2}"
-            sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' "${php2_service_file_2}"
-            sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' "${php2_service_file_2}"
-            systemctl daemon-reload
-        fi
+    php_install "${PHP2_VERSION_NEW}"
 }
 
 _install_ig_binary(){
-    check_ig_binary_php2_old=$(php"${PHP2_VERSION_OLD}" -m | grep igbinary)
-
-    if [ -n "${check_ig_binary_php2_old}" ]; then
-        if [[ "${PHP2_VERSION_NEW}" == "5.6" ]]; then
-            IG_BINARY_VERSION="2.0.8"
-        fi
-
-        EX_DIR="/opt/php-extension"
-        mkdir -p "${EX_DIR}"
-        _cd_dir "${EX_DIR}"
-        if [ -f "igbinary-${IG_BINARY_VERSION}.tgz" ]; then
-            rm -rf igbinary-"${IG_BINARY_VERSION}".tgz
-        fi
-        if [ -d "igbinary-${IG_BINARY_VERSION}" ]; then
-            rm -rf igbinary-"${IG_BINARY_VERSION}"
-        fi
-        wget "${MODULE_LINK}"/igbinary-"${IG_BINARY_VERSION}".tgz
-        tar -xvf igbinary-"${IG_BINARY_VERSION}".tgz
-        _cd_dir igbinary-"${IG_BINARY_VERSION}"
-        /usr/bin/phpize"${PHP2_VERSION_NEW}" && ./configure --with-php-config=/usr/bin/php-config"${PHP2_VERSION_NEW}"
-        make && make install
-        _cd_dir "${EX_DIR}"
-        rm -rf igbinary-"${IG_BINARY_VERSION}" igbinary-"${IG_BINARY_VERSION}".tgz
-
-        cat >> "${PHP2_NEW_INI_PATH}/30-igbinary.ini" << EOF
-extension=igbinary.so
-EOF
-        cat >> "${PHP2_NEW_CLI_PATH}/30-igbinary.ini" << EOF
-extension=igbinary.so
-EOF
+    # Only when the current PHP version already uses igbinary (Redis/Memcached installed)
+    if php"${PHP2_VERSION_OLD}" -m | grep -qi "^igbinary$"; then
+        php_ext_install "${PHP2_VERSION_NEW}" igbinary
     fi
 }
 
 _install_php_memcached(){
-    check_ig_binary_php1_new=$(php"${PHP2_VERSION_NEW}" -m | grep igbinary)
-
-    if [  -n "${check_ig_binary_php1_new}" ] && service_running 'memcached' ; then
-        if [[ "${PHP2_VERSION_NEW}" == "5.6" ]]; then
-            PHP_MEMCACHED_VERSION="2.2.0"
-        fi
-
-        EX_DIR="/opt/php-extension"
-        mkdir -p "${EX_DIR}"
-        _cd_dir "${EX_DIR}"
-        if [ -f "memcached-${PHP_MEMCACHED_VERSION}.tgz" ]; then
-            rm -rf memcached-"${PHP_MEMCACHED_VERSION}".tgz
-        fi
-        if [ -d "memcached-${PHP_MEMCACHED_VERSION}" ]; then
-            rm -rf memcached-"${PHP_MEMCACHED_VERSION}"
-        fi
-        wget "${MODULE_LINK}"/memcached-"${PHP_MEMCACHED_VERSION}".tgz
-        tar -xvf memcached-"${PHP_MEMCACHED_VERSION}".tgz
-        _cd_dir "memcached-${PHP_MEMCACHED_VERSION}"
-        /usr/bin/phpize"${PHP2_VERSION_NEW}" && ./configure --enable-memcached-igbinary --with-php-config=/usr/bin/php-config"${PHP2_VERSION_NEW}"
-        make && make install
-        cd "${EX_DIR}" && rm -rf memcached-"${PHP_MEMCACHED_VERSION}".tgz memcached-"${PHP_MEMCACHED_VERSION}"
-
-        cat >> "${PHP2_NEW_INI_PATH}/40-memcached.ini" << EOF
-extension=memcached.so
-EOF
-        cat >> "${PHP2_NEW_CLI_PATH}/40-memcached.ini" << EOF
-extension=memcached.so
-EOF
+    if php"${PHP2_VERSION_NEW}" -m | grep -qi "^igbinary$" && service_running 'memcached'; then
+        php_ext_install "${PHP2_VERSION_NEW}" memcached
     fi
 }
 
 _install_php_redis(){
-    check_ig_binary_php2_new=$(php"${PHP2_VERSION_NEW}" -m | grep igbinary)
-
-    if [  -n "${check_ig_binary_php2_new}" ] && service_running 'redis' ; then
-        if [[ "${PHP2_VERSION_NEW}" == "5.6" ]]; then
-            PHP_REDIS_VERSION="4.3.0"
-        fi
-
-        EX_DIR="/opt/php-extension"
-        mkdir -p "${EX_DIR}"
-        _cd_dir "${EX_DIR}"
-        if [ -f "redis-${PHP_REDIS_VERSION}.tgz" ]; then
-            rm -rf redis-"${PHP_REDIS_VERSION}".tgz
-        fi
-        if [ -d "memcached-${PHP_REDIS_VERSION}" ]; then
-            rm -rf redis-"${PHP_REDIS_VERSION}"
-        fi
-        wget "${MODULE_LINK}"/redis-"${PHP_REDIS_VERSION}".tgz
-        tar -xvf redis-"${PHP_REDIS_VERSION}".tgz
-        _cd_dir "${EX_DIR}/redis-${PHP_REDIS_VERSION}"
-        /usr/bin/phpize"${PHP2_VERSION_NEW}" && ./configure --enable-redis-igbinary --with-php-config=/usr/bin/php-config"${PHP2_VERSION_NEW}"
-        make && make install
-        cd "${EX_DIR}" && rm -rf redis-"${PHP_REDIS_VERSION}".tgz redis-"${PHP_REDIS_VERSION}"
-
-        cat >> "${PHP2_NEW_INI_PATH}/50-redis.ini" << EOF
-extension=redis.so
-EOF
-        cat >> "${PHP2_NEW_CLI_PATH}/50-redis.ini" << EOF
-extension=redis.so
-EOF
+    if php"${PHP2_VERSION_NEW}" -m | grep -qi "^igbinary$" && service_running 'redis'; then
+        php_ext_install "${PHP2_VERSION_NEW}" redis
     fi
 }
 
@@ -348,7 +206,7 @@ EOhostvn_custom_ini
 
 _php_opcache(){
     cat > "${PHP2_NEW_INI_PATH}/10-opcache.ini" <<EOphp_opcache
-zend_extension=opcache.so
+$(php_opcache_load_line "${PHP2_VERSION_NEW}")
 opcache.enable=1
 opcache.memory_consumption=${OPCACHE_MEM}
 opcache.interned_strings_buffer=8
@@ -451,7 +309,7 @@ _run(){
                 _remove_old_php
 
                 systemctl restart php"${PHP2_VERSION_NEW}"-fpm
-                systemctl enable php"${PHP2_VERSION_NEW}"-fpm
+                systemctl enable "$(php_service "${PHP2_VERSION_NEW}")"
                 _write_info
 
                 clear

@@ -51,7 +51,7 @@ while [ "${CHOICE}" != "0" ]; do
         echo ""
         sleep 4
         if [ ! -f "/usr/bin/htop" ]; then
-            apt-get install htop
+            pkg_install htop
         fi
         htop
         ;;
@@ -86,9 +86,8 @@ while [ "${CHOICE}" != "0" ]; do
 #        ;;
     9)
         clear
-        apt update -y
-        apt upgrade -y
-        apt autoremove -y
+        pkg_update
+        pkg_upgrade
         clear
         printf "%s\n" "${GREEN}Update VPS successfully.${NC}"
         menu_vps_manage

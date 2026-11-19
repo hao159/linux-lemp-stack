@@ -14,12 +14,14 @@ source /var/hostvn/menu/validate/rule
 source /var/hostvn/menu/helpers/function
 
 _set_var(){
-    new_v=$(curl -s "${UPDATE_LINK}"/version | grep "script_version=" | cut -f2 -d'=')
+    new_v=$(get_version script_version)
     current_v=$(grep -w "script_version" "${FILE_INFO}" | cut -f2 -d'=');
 }
 
 _check_update(){
-    if [[ "${new_v}" == "${current_v}" ]]; then
+    if [[ -z "${new_v}" ]]; then
+        ALERT=$(printf "%s\n" "${RED}Khong kiem tra duoc phien ban moi (${HOMEPAGE_LINK}).${NC}")
+    elif [[ "${new_v}" == "${current_v}" ]]; then
         ALERT=$(printf "%s\n" "${RED}Ban dang su dung phien ban moi nhat.${NC}")
     fi
 }
@@ -41,22 +43,25 @@ _confirm_update(){
 }
 
 _update(){
-    if [[ ! -f "/usr/bin/dos2unix" ]]; then
-        apt -y install dos2unix
-    fi
-    _cd_dir "${BASH_DIR}"
-    curl -sO "${UPDATE_LINK}"/update
-    dos2unix update
-    chmod +x update
-    bash update
-    rm -rf update
-    clear
-    if nginx -t; then
-        printf "%s\n" "${GREEN}Update ${AUTHOR} Script thanh cong.${NC}"
+    tmp_dir=$(mktemp -d)
+    if curl -fsSL "${REPO_TARBALL}" | tar -xz --strip-components=1 -C "${tmp_dir}" && [ -f "${tmp_dir}/menu/hostvn" ]; then
+        find "${tmp_dir}"/menu "${tmp_dir}"/version -type f -exec sed -i 's/\r$//' {} +
+        rm -rf "${BASH_DIR}"/menu.bak
+        mv "${BASH_DIR}"/menu "${BASH_DIR}"/menu.bak
+        cp -r "${tmp_dir}"/menu "${BASH_DIR}"/menu
+        cp "${tmp_dir}"/version "${BASH_DIR}"/version
+        chmod 711 "${BASH_DIR}"/menu
+        find "${BASH_DIR}"/menu -type f -exec chmod +x {} +
+        cp "${BASH_DIR}"/menu/hostvn /usr/bin/hostvn && chmod +x /usr/bin/hostvn
+        sed -i '/script_version=/d' "${FILE_INFO}"
+        echo "script_version=${new_v}" >> "${FILE_INFO}"
+        rm -rf "${tmp_dir}" "${BASH_DIR}"/menu.bak
+        clear
+        printf "%s\n" "${GREEN}Update ${AUTHOR} Script thanh cong (${new_v}).${NC}"
         printf "%s\n" "${RED}Script se tu dong thoat menu de ap dung update...${NC}"
     else
-        nginx -t
-        printf "%s\n" "${RED}Loi cau hinh Nginx. Vui long kiem tra lai cau hinh Nginx.${NC}"
+        rm -rf "${tmp_dir}"
+        printf "%s\n" "${RED}Khong tai duoc ban cap nhat tu ${HOMEPAGE_LINK}.${NC}"
     fi
     sleep 3
     exit

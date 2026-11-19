@@ -181,7 +181,7 @@ elif [[ "${action}" == "disable" ]]; then
     _destroy_redirect_domain
 else
     printf "%s\n" "${RED}Lua chon website chinh.${NC}"
-    _select_domain
+    _select_real_domain
 
     if [[ -z "${domain}" && -z "${ALERT}" ]]; then
         clear

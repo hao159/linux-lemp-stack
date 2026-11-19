@@ -102,7 +102,7 @@ ALERT=""
 domain=""
 newDomain=""
 
-_select_domain
+_select_real_domain
 
 if [[ -z "${domain}" && -z "${ALERT}" ]]; then
     clear

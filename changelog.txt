@@ -1,4 +1,13 @@
+v1.0.0
+
+- Added: Debian 11/12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux/Rocky/Oracle Linux/CentOS Stream/RHEL 8+
+- Added: PHP 8.1 - 8.5 (Ondrej/Sury on Debian family, Remi on RHEL family)
+- Added: Dev server mode (./install --dev) and websites served on IP:PORT
+- Added: OS abstraction layer menu/helpers/os (apt/dnf, ufw/firewalld)
+- Changed: MariaDB 11.8, phpMyAdmin 5.2, Nginx 1.30
+- Changed: source, version file and updates come from GitHub instead of scripts.hostvn.net
+- Removed: ngx_pagespeed, Ubuntu 18.04/20.04
+
 v0.2.1
 
 - Added: Multiple SSL server
-

@@ -12,7 +12,8 @@
 
 set_variable(){
     if [ ! -f "/usr/bin/bc" ]; then
-        apt-get install bc
+        source /var/hostvn/menu/helpers/os
+        pkg_install bc
     fi
     CPU_CORES=$(grep -c "processor" /proc/cpuinfo)
     RAM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)

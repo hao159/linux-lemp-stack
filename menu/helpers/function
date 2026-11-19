@@ -71,6 +71,16 @@ _select_domain(){
     fi
 }
 
+# Same as _select_domain but refuses dev sites (IP:PORT)
+_select_real_domain(){
+    _select_domain
+    if [ -n "${domain}" ] && [ -n "$(_site_port "${domain}")" ]; then
+        clear
+        printf "%s\n" "${RED}Website ${domain} chay bang IP:PORT (dev), chuc nang nay chi danh cho website co ten mien.${NC}"
+        domain=""
+    fi
+}
+
 _select_wordpress_website(){
     domain=""
     #https://www.cyberciti.biz/faq/linux-unix-shell-check-if-directory-empty/
@@ -289,4 +299,86 @@ _restart_service(){
     if [ "${php2_release}" == "yes" ]; then
         systemctl restart php"${php2_version}"-fpm
     fi
+}
+
+############################################
+# Dev site: website served on IP:PORT instead of a domain name
+# (internal dev server). The port is stored as "port=" in the
+# website config file ${USER_DIR}/.<name>.conf
+############################################
+_site_port(){
+    if [ -f "${USER_DIR}/.${1}.conf" ]; then
+        grep "^port=" "${USER_DIR}/.${1}.conf" | cut -f2 -d'=' | head -n1
+    fi
+}
+
+# http://IP:PORT for a dev site, http://domain otherwise
+_site_url(){
+    local _port
+    _port=$(_site_port "${1}")
+    if [ -n "${_port}" ]; then
+        echo "http://${IPADDRESS}:${_port}"
+    else
+        echo "http://${1}"
+    fi
+}
+
+# Return 0 when the port is already used by another dev site
+_site_port_used(){
+    grep -qs "^port=${1}$" "${USER_DIR}"/.*.conf
+}
+
+# Rewrite the vhost of a dev site: listen on its own port, answer any Host
+# header and drop the HTTPS server block. Safe to call more than once and a
+# no-op for normal (domain) websites.
+_apply_dev_port(){
+    local _name="${1}" _port _vhost _tmp
+    _port=$(_site_port "${_name}")
+    _vhost="${VHOST_DIR}/${_name}.conf"
+    if [ -z "${_port}" ] || [ ! -f "${_vhost}" ]; then
+        return 0
+    fi
+
+    _tmp=$(mktemp)
+    awk -v port="${_port}" -v name="${_name}" '
+        {
+            line = $0
+            if (depth == 0 && line ~ /^[ \t]*server[ \t]*\{/) {
+                inserver = 1
+                blk = ""
+                ssl = 0
+            }
+            if (inserver) {
+                out = line
+                if (out ~ /^[ \t]*listen[ \t]+443/) {
+                    ssl = 1
+                } else if (out ~ /^[ \t]*listen[ \t]+80;/) {
+                    sub(/listen[ \t]+80;/, "listen " port ";", out)
+                } else if (out ~ /^[ \t]*server_name[ \t]/) {
+                    indent = out
+                    sub(/server_name.*/, "", indent)
+                    out = indent "server_name " name " _;"
+                }
+                blk = blk out "\n"
+            } else {
+                print line
+            }
+            if (line !~ /^[ \t]*#/) {
+                tmp = line
+                depth += gsub(/\{/, "{", tmp)
+                depth -= gsub(/\}/, "}", tmp)
+            }
+            if (inserver && depth == 0) {
+                if (!ssl) {
+                    printf "%s", blk
+                }
+                inserver = 0
+            }
+        }
+    ' "${_vhost}" > "${_tmp}"
+
+    if [ -s "${_tmp}" ]; then
+        cat "${_tmp}" > "${_vhost}"
+    fi
+    rm -f "${_tmp}"
 }

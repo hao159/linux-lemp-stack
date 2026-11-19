@@ -162,8 +162,10 @@ _create_vhost() {
 
     if [ -f "${CUSTOM_DIR}/wordpress.conf" ]; then
         cp "${CUSTOM_DIR}"/wordpress.conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     else
         cp "${TEMPLATE_DIR}"/wordpress.conf "${VHOST_DIR}"/"${domain}".conf
+        _apply_dev_port "${domain}"
     fi
 
     sed -i "s/WEBSITE_USER/${user}/g" "${VHOST_DIR}"/"${domain}".conf

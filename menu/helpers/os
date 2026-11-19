@@ -1,0 +1,821 @@
+#!/bin/bash
+
+######################################################################
+#        OS abstraction layer - shared by installer and menu         #
+#                                                                    #
+#  Supported: Ubuntu 22.04+ / Debian 11+ (apt, ufw)                  #
+#             RHEL family 8+ : AlmaLinux, Rocky, Oracle Linux,       #
+#             CentOS Stream, RHEL (dnf, firewalld)                   #
+#                                                                    #
+#  Original script: Sanvv - HOSTVN Technical (https://hostvn.vn)     #
+######################################################################
+
+# shellcheck disable=SC2034
+
+# Repository that hosts this script (used for install + update).
+REPO_SLUG="${REPO_SLUG:-hao159/linux-lemp-stack}"
+REPO_BRANCH="${REPO_BRANCH:-master}"
+REPO_RAW="https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_BRANCH}"
+REPO_TARBALL="https://github.com/${REPO_SLUG}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+
+############################################
+# Detect OS
+############################################
+os_detect() {
+    OS_ID=""
+    OS_LIKE=""
+    OS_VERSION_ID=""
+    OS_CODENAME=""
+    if [ -f /etc/os-release ]; then
+        OS_ID=$(. /etc/os-release && echo "${ID}")
+        OS_LIKE=$(. /etc/os-release && echo "${ID_LIKE}")
+        OS_VERSION_ID=$(. /etc/os-release && echo "${VERSION_ID}")
+        OS_CODENAME=$(. /etc/os-release && echo "${VERSION_CODENAME}")
+    fi
+    OS_MAJOR=${OS_VERSION_ID%%.*}
+
+    case "${OS_ID}" in
+    ubuntu | debian) OS_FAMILY="debian" ;;
+    centos | rhel | almalinux | rocky | ol) OS_FAMILY="rhel" ;;
+    *)
+        case " ${OS_LIKE} " in
+        *" debian "* | *" ubuntu "*) OS_FAMILY="debian" ;;
+        *" rhel "* | *" fedora "* | *" centos "*) OS_FAMILY="rhel" ;;
+        *) OS_FAMILY="unknown" ;;
+        esac
+        ;;
+    esac
+
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        PKG_MGR="dnf"
+        MYSQL_CNF="/etc/my.cnf"
+        MYSQL_SOCK="/var/lib/mysql/mysql.sock"
+        FIREWALL="firewalld"
+        REDIS_SERVICE="redis"
+        REDIS_CONF="/etc/redis/redis.conf"
+        [ -f /etc/redis.conf ] && REDIS_CONF="/etc/redis.conf"
+        MEMCACHED_CONF="/etc/sysconfig/memcached"
+    else
+        PKG_MGR="apt-get"
+        MYSQL_CNF="/etc/mysql/my.cnf"
+        MYSQL_SOCK="/run/mysqld/mysqld.sock"
+        FIREWALL="ufw"
+        REDIS_SERVICE="redis-server"
+        REDIS_CONF="/etc/redis/redis.conf"
+        MEMCACHED_CONF="/etc/memcached.conf"
+    fi
+}
+
+# Return 0 when this OS release is supported.
+os_supported() {
+    case "${OS_ID}" in
+    ubuntu)
+        case "${OS_VERSION_ID}" in
+        22.04 | 24.04 | 26.04) return 0 ;;
+        esac
+        ;;
+    debian) [[ "${OS_MAJOR}" -ge 11 ]] && return 0 ;;
+    centos | rhel | almalinux | rocky | ol) [[ "${OS_MAJOR}" -ge 8 ]] && return 0 ;;
+    esac
+    return 1
+}
+
+############################################
+# Package manager
+############################################
+pkg_update() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y makecache
+    else
+        apt-get update -y
+    fi
+}
+
+pkg_upgrade() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y upgrade
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+        apt-get autoremove -y
+    fi
+}
+
+# Install packages, all of them are required.
+pkg_install() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y install "$@"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+    fi
+}
+
+# Install packages one by one, a missing package does not stop the others.
+pkg_install_optional() {
+    local p
+    for p in "$@"; do
+        pkg_install "${p}" >/dev/null 2>&1 || printf "  - skip package (not available): %s\n" "${p}"
+    done
+}
+
+pkg_remove() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y remove "$@"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get purge --auto-remove -y "$@"
+    fi
+}
+
+pkg_autoremove() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y autoremove
+    else
+        apt-get autoremove -y
+    fi
+}
+
+############################################
+# Base system
+############################################
+# EPEL + CodeReady/PowerTools on the RHEL family (needed by Remi and by build deps)
+os_enable_extra_repos() {
+    [ "${OS_FAMILY}" == "rhel" ] || return 0
+
+    dnf -y install dnf-plugins-core
+    if [ "${OS_ID}" == "ol" ]; then
+        dnf -y install "oracle-epel-release-el${OS_MAJOR}"
+        dnf config-manager --set-enabled "ol${OS_MAJOR}_codeready_builder" 2>/dev/null
+    else
+        dnf -y install epel-release 2>/dev/null ||
+            dnf -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${OS_MAJOR}.noarch.rpm"
+        if [ "${OS_MAJOR}" == "8" ]; then
+            dnf config-manager --set-enabled powertools 2>/dev/null
+        else
+            dnf config-manager --set-enabled crb 2>/dev/null
+        fi
+        if [ "${OS_ID}" == "rhel" ]; then
+            subscription-manager repos --enable "codeready-builder-for-rhel-${OS_MAJOR}-$(arch)-rpms" 2>/dev/null
+        fi
+    fi
+}
+
+os_install_base() {
+    os_enable_extra_repos
+    pkg_update
+
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        # curl is not listed: EL9+ ships curl-minimal which conflicts with the curl package
+        pkg_install gcc gcc-c++ make perl openssl openssl-devel zlib-devel pcre2-devel git wget tar \
+            unzip zip bzip2 ca-certificates cronie logrotate bc which procps-ng psmisc findutils \
+            httpd-tools bind-utils net-tools tzdata util-linux shadow-utils sudo || return 1
+        pkg_install_optional brotli-devel libxml2-devel dos2unix htop nano supervisor rsyslog ImageMagick \
+            libwebp-tools gifsicle optipng jpegoptim pngquant policycoreutils-python-utils jq
+        systemctl enable --now crond 2>/dev/null
+    else
+        pkg_install build-essential perl openssl libssl-dev zlib1g-dev libpcre2-dev git wget curl tar \
+            unzip zip bzip2 ca-certificates cron logrotate bc procps psmisc findutils apache2-utils \
+            dnsutils net-tools tzdata gnupg lsb-release sudo || return 1
+        pkg_install_optional libbrotli-dev libxml2-dev dos2unix htop nano supervisor rsyslog imagemagick \
+            webp gifsicle optipng jpegoptim pngquant apt-transport-https jq
+    fi
+
+    systemctl stop supervisor supervisord 2>/dev/null
+    systemctl disable supervisor supervisord 2>/dev/null
+    return 0
+}
+
+# PHP-FPM (Remi) runs confined by SELinux and can not read /home/<user>/<domain>.
+os_selinux_permissive() {
+    if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" == "Enforcing" ]; then
+        setenforce 0
+        sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+    fi
+}
+
+os_add_group() {
+    getent group "$1" >/dev/null 2>&1 || groupadd "$1"
+}
+
+os_add_nginx_user() {
+    getent group nginx >/dev/null 2>&1 || groupadd -r nginx
+    id nginx >/dev/null 2>&1 || useradd -r -g nginx -s /usr/sbin/nologin -d /nonexistent -M -c "nginx user" nginx
+}
+
+get_local_ip() {
+    local ip_addr
+    ip_addr=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    if [ -z "${ip_addr}" ]; then
+        ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    echo "${ip_addr}"
+}
+
+get_public_ip() {
+    local ip_addr="" url
+    for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+        ip_addr=$(curl -s -4 -m 8 "${url}" 2>/dev/null | tr -d '[:space:]')
+        if [[ "${ip_addr}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "${ip_addr}"
+            return 0
+        fi
+    done
+    get_local_ip
+}
+
+# Read a key from the version file of the repository (fallback: local copy).
+get_version() {
+    local value=""
+    # During installation the version file shipped with the source is the reference
+    if [ -n "${LEMP_SRC_DIR}" ] && [ -f "${LEMP_SRC_DIR}/version" ]; then
+        grep "^${1}=" "${LEMP_SRC_DIR}/version" | cut -f2 -d'='
+        return 0
+    fi
+    value=$(curl -s -m 15 "${REPO_RAW}/version" 2>/dev/null | grep "^${1}=" | cut -f2 -d'=')
+    if [ -z "${value}" ] && [ -f /var/hostvn/version ]; then
+        value=$(grep "^${1}=" /var/hostvn/version | cut -f2 -d'=')
+    fi
+    echo "${value}"
+}
+
+############################################
+# Firewall (ufw on Debian family, firewalld on RHEL family)
+############################################
+fw_active() {
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        systemctl is-active --quiet firewalld
+    else
+        ufw status 2>/dev/null | grep -q "Status: active"
+    fi
+}
+
+fw_install() {
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        command -v firewall-cmd >/dev/null 2>&1 || pkg_install firewalld
+    else
+        command -v ufw >/dev/null 2>&1 || pkg_install ufw
+    fi
+}
+
+# Enable the firewall. The SSH port(s) are always allowed first.
+fw_enable() {
+    fw_install
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        systemctl enable --now firewalld
+        firewall-cmd --permanent --add-service=ssh >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw allow ssh >/dev/null
+        systemctl enable ufw >/dev/null 2>&1
+        ufw --force enable
+    fi
+}
+
+fw_disable() {
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        systemctl disable --now firewalld
+    else
+        ufw --force disable
+        systemctl stop ufw
+        systemctl disable ufw
+    fi
+}
+
+fw_reload() {
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        firewall-cmd --reload >/dev/null
+    else
+        ufw reload >/dev/null
+    fi
+}
+
+# fw_allow_port <port> [tcp|udp]  - does nothing when the firewall is not running
+fw_allow_port() {
+    local proto="${2:-tcp}"
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        firewall-cmd --permanent --add-port="${1}/${proto}" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw allow "${1}/${proto}" >/dev/null
+    fi
+}
+
+fw_remove_port() {
+    local proto="${2:-tcp}"
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        firewall-cmd --permanent --remove-port="${1}/${proto}" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw delete allow "${1}/${proto}" >/dev/null 2>&1
+        ufw delete allow "${1}" >/dev/null 2>&1
+    fi
+}
+
+fw_deny_port() {
+    local proto="${2:-tcp}"
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        firewall-cmd --permanent --remove-port="${1}/${proto}" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw delete allow "${1}/${proto}" >/dev/null 2>&1
+        ufw deny "${1}/${proto}" >/dev/null
+    fi
+}
+
+fw_block_ip() {
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        local family="ipv4"
+        [[ "$1" == *:* ]] && family="ipv6"
+        firewall-cmd --permanent --add-rich-rule="rule family='${family}' source address='${1}' drop" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw insert 1 deny from "$1" to any >/dev/null
+    fi
+}
+
+fw_unblock_ip() {
+    fw_active || return 0
+    if [ "${FIREWALL}" == "firewalld" ]; then
+        local family="ipv4"
+        [[ "$1" == *:* ]] && family="ipv6"
+        firewall-cmd --permanent --remove-rich-rule="rule family='${family}' source address='${1}' drop" >/dev/null
+        firewall-cmd --reload >/dev/null
+    else
+        ufw delete deny from "$1" to any >/dev/null
+    fi
+}
+
+############################################
+# PHP
+#   Debian family : Ondrej PPA (Ubuntu) / packages.sury.org (Debian)
+#   RHEL family   : Remi repository (parallel installable phpXY packages)
+#
+# On the RHEL family a compatibility layout is created so the same paths
+# and service names work everywhere:
+#   /etc/php/X.Y/fpm            -> /etc/opt/remi/phpXY
+#   /etc/php/X.Y/fpm/conf.d     -> php.d
+#   /etc/php/X.Y/fpm/pool.d     -> php-fpm.d
+#   /etc/php/X.Y/cli/conf.d        (unused placeholder, CLI reads php.d)
+#   phpX.Y-fpm.service          -> phpXY-php-fpm.service
+#   /usr/bin/phpX.Y, phpizeX.Y, php-configX.Y
+############################################
+_php_nodot() {
+    echo "${1//./}"
+}
+
+# Real systemd unit name (use for enable/disable, start/stop work with both names)
+php_service() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        echo "php$(_php_nodot "$1")-php-fpm"
+    else
+        echo "php${1}-fpm"
+    fi
+}
+
+php_repo_setup() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        if ! rpm -q remi-release >/dev/null 2>&1; then
+            dnf -y install "https://rpms.remirepo.net/enterprise/remi-release-${OS_MAJOR}.rpm"
+        fi
+        return 0
+    fi
+
+    [ -f /etc/apt/sources.list.d/php-sury.list ] && return 0
+    ls /etc/apt/sources.list.d/ 2>/dev/null | grep -q "ondrej.*php" && return 0
+
+    if [ "${OS_ID}" == "ubuntu" ] &&
+        curl -sfI -m 15 "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/${OS_CODENAME}/Release" >/dev/null; then
+        pkg_install software-properties-common
+        add-apt-repository -y ppa:ondrej/php
+    else
+        # Debian, or an Ubuntu release that the PPA does not carry yet
+        mkdir -p /usr/share/keyrings
+        curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb
+        dpkg -i /tmp/debsuryorg-archive-keyring.deb
+        rm -f /tmp/debsuryorg-archive-keyring.deb
+        echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ ${OS_CODENAME} main" \
+            >/etc/apt/sources.list.d/php-sury.list
+    fi
+    apt-get update -y
+}
+
+# Hardening + limits for the php-fpm unit (drop-in, survives package updates)
+_php_service_dropin() {
+    local svc
+    svc=$(php_service "$1")
+    mkdir -p "/etc/systemd/system/${svc}.service.d"
+    cat >"/etc/systemd/system/${svc}.service.d/hostvn.conf" <<EOF
+[Service]
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+EOF
+}
+
+_php_rhel_compat() {
+    local ver="$1" nd scl_etc scl_root svc
+    nd=$(_php_nodot "${ver}")
+    scl_etc="/etc/opt/remi/php${nd}"
+    scl_root="/opt/remi/php${nd}/root"
+    svc=$(php_service "${ver}")
+
+    mkdir -p "/etc/php/${ver}/cli/conf.d"
+    ln -sfn "${scl_etc}" "/etc/php/${ver}/fpm"
+    ln -sfn php.d "${scl_etc}/conf.d"
+    ln -sfn php-fpm.d "${scl_etc}/pool.d"
+
+    ln -sf "${scl_root}/usr/bin/php" "/usr/bin/php${ver}"
+    ln -sf "${scl_root}/usr/bin/phpize" "/usr/bin/phpize${ver}"
+    ln -sf "${scl_root}/usr/bin/php-config" "/usr/bin/php-config${ver}"
+    ln -sf "${scl_root}/usr/sbin/php-fpm" "/usr/sbin/php-fpm${ver}"
+
+    # Service alias: systemctl restart php8.3-fpm
+    ln -sf "/usr/lib/systemd/system/${svc}.service" "/etc/systemd/system/php${ver}-fpm.service"
+
+    # Socket / pid directory shared by all PHP versions
+    echo "d /run/php 0755 root root -" >/etc/tmpfiles.d/hostvn-php.conf
+    systemd-tmpfiles --create /etc/tmpfiles.d/hostvn-php.conf
+}
+
+# php_install <X.Y>
+php_install() {
+    local ver="$1" nd p
+    nd=$(_php_nodot "${ver}")
+    php_repo_setup
+
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        p="php${nd}-php"
+        pkg_install "php${nd}" "${p}-fpm" "${p}-cli" "${p}-common" "${p}-mysqlnd" "${p}-gd" "${p}-xml" \
+            "${p}-mbstring" "${p}-devel" || return 1
+        pkg_install_optional "${p}-opcache" "${p}-ldap" "${p}-pecl-zip" "${p}-soap" "${p}-bcmath" "${p}-snmp" "${p}-pspell" \
+            "${p}-gmp" "${p}-intl" "${p}-imap" "${p}-pecl-imap" "${p}-enchant" "${p}-pecl-xmlrpc" "${p}-tidy" \
+            "${p}-pecl-imagick" "${p}-pecl-imagick-im7" "${p}-pdo" "${p}-process" "${p}-sodium" "${p}-json"
+        _php_rhel_compat "${ver}"
+    else
+        p="php${ver}"
+        pkg_install "${p}" "${p}-fpm" "${p}-cli" "${p}-common" "${p}-mysql" "${p}-gd" "${p}-xml" \
+            "${p}-mbstring" "${p}-curl" "${p}-zip" "${p}-dev" || return 1
+        pkg_install_optional "${p}-opcache" "${p}-ldap" "${p}-soap" "${p}-bcmath" "${p}-snmp" "${p}-pspell" "${p}-gmp" \
+            "${p}-intl" "${p}-imap" "${p}-enchant" "${p}-xmlrpc" "${p}-tidy" "${p}-imagick" "${p}-sqlite3"
+        # json is part of PHP core since 8.0, mcrypt was removed in 7.2
+        case "${ver}" in
+        5.* | 7.*) pkg_install_optional "${p}-json" ;;
+        esac
+        [ "${ver}" == "5.6" ] && pkg_install_optional php5.6-mcrypt
+        # Apache may be pulled in as a dependency of the phpX.Y meta package
+        systemctl disable --now apache2 >/dev/null 2>&1
+    fi
+
+    _php_service_dropin "${ver}"
+    systemctl daemon-reload
+    return 0
+}
+
+php_remove() {
+    local ver="$1" nd
+    nd=$(_php_nodot "${ver}")
+    systemctl stop "$(php_service "${ver}")" 2>/dev/null
+    systemctl disable "$(php_service "${ver}")" 2>/dev/null
+
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y remove "php${nd}" "php${nd}-*"
+        rm -f "/usr/bin/php${ver}" "/usr/bin/phpize${ver}" "/usr/bin/php-config${ver}" "/usr/sbin/php-fpm${ver}"
+        rm -f "/etc/systemd/system/php${ver}-fpm.service"
+        rm -rf "/etc/opt/remi/php${nd}"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y "php${ver}" "php${ver}-*"
+        apt-get autoremove -y
+    fi
+    rm -rf "/etc/php/${ver}" "/etc/systemd/system/$(php_service "${ver}").service.d"
+    systemctl daemon-reload
+}
+
+# Make "php" point to the given version
+php_set_default() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        ln -sf "/usr/bin/php${1}" /usr/bin/php
+        ln -sf "/usr/bin/phpize${1}" /usr/bin/phpize
+        ln -sf "/usr/bin/php-config${1}" /usr/bin/php-config
+    else
+        update-alternatives --set php "/usr/bin/php${1}"
+        update-alternatives --set phpize "/usr/bin/phpize${1}" 2>/dev/null
+        update-alternatives --set php-config "/usr/bin/php-config${1}" 2>/dev/null
+    fi
+}
+
+# php_ext_install <X.Y> <igbinary|redis|memcached>  - prebuilt packages, no compiling
+php_ext_install() {
+    local ver="$1" ext="$2" nd
+    nd=$(_php_nodot "${ver}")
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        case "${ext}" in
+        redis)
+            pkg_install "php${nd}-php-pecl-redis6" 2>/dev/null || pkg_install "php${nd}-php-pecl-redis5" ||
+                pkg_install "php${nd}-php-pecl-redis"
+            ;;
+        *) pkg_install "php${nd}-php-pecl-${ext}" ;;
+        esac
+    else
+        pkg_install "php${ver}-${ext}"
+    fi
+}
+
+php_ext_remove() {
+    local ver="$1" ext="$2" nd
+    nd=$(_php_nodot "${ver}")
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y remove "php${nd}-php-pecl-${ext}*"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y "php${ver}-${ext}"
+    fi
+}
+
+# OPcache is compiled into PHP since 8.5, loading the shared object again only prints a warning.
+php_opcache_load_line() {
+    local major=${1%%.*} minor=${1##*.}
+    if [[ "${major}" -gt 8 || ("${major}" -eq 8 && "${minor}" -ge 5) ]]; then
+        echo "; opcache is built into PHP ${1}"
+    else
+        echo "zend_extension=opcache.so"
+    fi
+}
+
+############################################
+# MariaDB
+############################################
+# mariadb_install <version, ex: 11.8>
+mariadb_install() {
+    local ver="$1"
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        cat >/etc/yum.repos.d/MariaDB.repo <<EOF
+[mariadb]
+name = MariaDB ${ver}
+baseurl = https://rpm.mariadb.org/${ver}/rhel/${OS_MAJOR}/\$basearch
+gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck = 1
+module_hotfixes = 1
+EOF
+        dnf -y makecache
+        pkg_install MariaDB-server MariaDB-client || return 1
+        pkg_install_optional MariaDB-backup MariaDB-client-compat MariaDB-server-compat
+        mkdir -p /etc/my.cnf.d
+    else
+        mkdir -p /etc/apt/keyrings
+        curl -sSLo /etc/apt/keyrings/mariadb-keyring.pgp https://mariadb.org/mariadb_release_signing_key.pgp
+        echo "deb [signed-by=/etc/apt/keyrings/mariadb-keyring.pgp] https://deb.mariadb.org/${ver}/${OS_ID} ${OS_CODENAME} main" \
+            >/etc/apt/sources.list.d/mariadb.list
+        if ! apt-get update -y || ! apt-cache policy mariadb-server | grep -q "deb.mariadb.org"; then
+            # This release is not published by MariaDB yet: use the distribution package
+            rm -f /etc/apt/sources.list.d/mariadb.list
+            apt-get update -y
+        fi
+        pkg_install mariadb-server mariadb-client || return 1
+        pkg_install_optional mariadb-backup mariadb-client-compat mariadb-server-compat
+    fi
+
+    # Old client names are still used all over the menu
+    local pair new old
+    for pair in mariadb:mysql mariadb-dump:mysqldump mariadb-admin:mysqladmin mariadb-show:mysqlshow mariadb-check:mysqlcheck; do
+        new=${pair%%:*}
+        old=${pair##*:}
+        if ! command -v "${old}" >/dev/null 2>&1 && command -v "${new}" >/dev/null 2>&1; then
+            ln -sf "$(command -v "${new}")" "/usr/bin/${old}"
+        fi
+    done
+    return 0
+}
+
+############################################
+# Nginx (built from source so every OS gets the same modules:
+# brotli, headers-more, cache purge, vts)
+############################################
+# nginx_build <version>
+nginx_build() {
+    local ver="$1" cache_purge_v headers_more_v vts_v module_path="/usr/share/nginx_module"
+    cache_purge_v=$(get_version ngx_cache_purge_version)
+    headers_more_v=$(get_version more_clear_headers_v)
+    vts_v=$(get_version nginx_module_vts_v)
+
+    if [ -z "${ver}" ] || [ -z "${cache_purge_v}" ] || [ -z "${headers_more_v}" ] || [ -z "${vts_v}" ]; then
+        echo "Can not read nginx versions from the version file."
+        return 1
+    fi
+
+    rm -rf "${module_path}"
+    mkdir -p "${module_path}"
+    cd "${module_path}" || return 1
+
+    wget -qO- "https://nginx.org/download/nginx-${ver}.tar.gz" | tar -xz
+    wget -qO- "https://github.com/nginx-modules/ngx_cache_purge/archive/refs/tags/${cache_purge_v}.tar.gz" | tar -xz
+    wget -qO- "https://github.com/openresty/headers-more-nginx-module/archive/refs/tags/v${headers_more_v}.tar.gz" | tar -xz
+    wget -qO- "https://github.com/vozlt/nginx-module-vts/archive/refs/tags/v${vts_v}.tar.gz" | tar -xz
+    git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/google/ngx_brotli
+
+    if [ ! -d "nginx-${ver}" ] || [ ! -d ngx_brotli ]; then
+        echo "Download nginx source failed."
+        return 1
+    fi
+
+    # Without the system brotli library the bundled copy has to be built first
+    if ! [ -f /usr/include/brotli/encode.h ]; then
+        pkg_install cmake
+        mkdir -p ngx_brotli/deps/brotli/out
+        (cd ngx_brotli/deps/brotli/out &&
+            cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=./installed .. &&
+            cmake --build . --config Release --target brotlienc) || return 1
+    fi
+
+    cd "${module_path}/nginx-${ver}" || return 1
+    ./configure \
+        "--user=nginx" \
+        "--group=nginx" \
+        "--prefix=/usr" \
+        "--sbin-path=/usr/sbin" \
+        "--conf-path=/etc/nginx/nginx.conf" \
+        "--pid-path=/run/nginx.pid" \
+        "--lock-path=/run/nginx.lock" \
+        "--http-log-path=/var/log/nginx/access_log" \
+        "--error-log-path=/var/log/nginx/error_log" \
+        "--http-client-body-temp-path=/var/cache/nginx/client_temp" \
+        "--http-proxy-temp-path=/var/cache/nginx/proxy_temp" \
+        "--http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp" \
+        "--http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp" \
+        "--http-scgi-temp-path=/var/cache/nginx/scgi_temp" \
+        "--without-mail_imap_module" \
+        "--without-mail_smtp_module" \
+        "--with-threads" \
+        "--with-file-aio" \
+        "--with-http_ssl_module" \
+        "--with-http_realip_module" \
+        "--with-http_stub_status_module" \
+        "--with-http_gzip_static_module" \
+        "--with-http_dav_module" \
+        "--with-http_v2_module" \
+        "--with-http_sub_module" \
+        "--with-http_auth_request_module" \
+        "--with-pcre-jit" \
+        "--add-module=../ngx_cache_purge-${cache_purge_v}" \
+        "--add-module=../headers-more-nginx-module-${headers_more_v}" \
+        "--add-module=../ngx_brotli" \
+        "--add-module=../nginx-module-vts-${vts_v}" \
+        "--with-cc-opt=-DFD_SETSIZE=32768" || return 1
+
+    make -j"$(nproc)" || return 1
+    make install || return 1
+
+    mkdir -p /var/cache/nginx /var/log/nginx
+    return 0
+}
+
+nginx_install_service() {
+    os_add_nginx_user
+    mkdir -p /var/cache/nginx /var/log/nginx /etc/nginx/conf.d
+    chown nginx:nginx /var/cache/nginx
+
+    cat >/etc/systemd/system/nginx.service <<EOnginx_service
+[Unit]
+Description=The nginx HTTP and reverse proxy server
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/run/nginx.pid
+ExecStartPre=/usr/sbin/nginx -t -c /etc/nginx/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/nginx/nginx.conf
+ExecReload=/bin/kill -s HUP \$MAINPID
+ExecStop=/bin/kill -s QUIT \$MAINPID
+PrivateTmp=true
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOnginx_service
+
+    cat >/etc/logrotate.d/nginx <<'EOnginx_logrotate'
+/var/log/nginx/*.log {
+    weekly
+    missingok
+    rotate 8
+    compress
+    delaycompress
+    notifempty
+    sharedscripts
+    postrotate
+        [ -f /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)"
+    endscript
+}
+EOnginx_logrotate
+
+    systemctl daemon-reload
+    systemctl enable nginx.service
+}
+
+############################################
+# Redis / Memcached
+############################################
+redis_installed() {
+    systemctl list-unit-files 2>/dev/null | grep -qE "^(redis|redis-server|valkey)\.service"
+}
+
+redis_install() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        # EL10 ships valkey (drop-in replacement) instead of redis
+        if ! pkg_install redis; then
+            pkg_install valkey valkey-compat-redis || return 1
+        fi
+        if [ ! -f /usr/lib/systemd/system/redis.service ] && [ -f /usr/lib/systemd/system/valkey.service ]; then
+            ln -sf /usr/lib/systemd/system/valkey.service /etc/systemd/system/redis.service
+            systemctl daemon-reload
+        fi
+        for f in /etc/redis/redis.conf /etc/redis.conf /etc/valkey/valkey.conf; do
+            [ -f "${f}" ] && REDIS_CONF="${f}" && break
+        done
+    else
+        pkg_install redis-server || return 1
+    fi
+    return 0
+}
+
+redis_enable() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        systemctl enable redis 2>/dev/null || systemctl enable valkey
+    else
+        systemctl enable redis-server
+    fi
+}
+
+redis_disable() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        systemctl disable redis 2>/dev/null || systemctl disable valkey
+    else
+        systemctl disable redis-server
+    fi
+}
+
+redis_remove() {
+    systemctl stop redis 2>/dev/null
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y remove redis valkey valkey-compat-redis 2>/dev/null
+        rm -f /etc/systemd/system/redis.service
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get purge --auto-remove -y redis-server
+    fi
+    rm -rf /etc/redis
+    systemctl daemon-reload
+}
+
+memcached_installed() {
+    command -v memcached >/dev/null 2>&1
+}
+
+# memcached_install <memory MB> <max connections>
+memcached_install() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        pkg_install memcached || return 1
+        cat >"${MEMCACHED_CONF}" <<END
+PORT="11211"
+USER="memcached"
+MAXCONN="${2}"
+CACHESIZE="${1}"
+OPTIONS="-l 127.0.0.1 -U 0"
+END
+    else
+        pkg_install memcached || return 1
+        pkg_install_optional libmemcached-tools
+        cat >"${MEMCACHED_CONF}" <<END
+# Run memcached as a daemon.
+-d
+logfile /var/log/memcached.log
+# memory
+-m ${1}
+-p 11211
+-u memcache
+-l 127.0.0.1
+# Limit the number of simultaneous incoming connections
+-c ${2}
+-P /var/run/memcached/memcached.pid
+# Disable UDP
+-U 0
+END
+    fi
+    return 0
+}
+
+memcached_remove() {
+    systemctl stop memcached 2>/dev/null
+    pkg_remove memcached
+    rm -f /etc/memcached.conf
+    systemctl daemon-reload
+}
+
+os_detect

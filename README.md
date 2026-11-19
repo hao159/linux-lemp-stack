@@ -1,145 +1,135 @@
-<p align="center"><strong>Auto Install & Optimize LEMP Stack on Ubuntu (18.04, 20.04)</strong></p>
-<p align="center"><strong>Author: Sanvv - HOSTVN.NET Technical</strong></p>
-<p align="center"><strong>Home Page: <a href="https://hostvn.vn/">Hostvn Scripts Home page</a> , <a href="https://hostvn.net">Hostvn.net - Tên miền, Web Hosting, Email, VPS &amp; Dịch vụ lưu trữ Website</a></strong></p>
-<p align="center"><strong>Document: https://help.hostvn.vn/</strong></p>
-<p align="center"><strong>Groups Support: https://www.facebook.com/groups/hostvn.vn</strong></p>
+<p align="center"><strong>Auto Install & Optimize LEMP Stack</strong></p>
+<p align="center"><strong>Ubuntu · Debian · AlmaLinux · Rocky Linux · Oracle Linux · CentOS Stream · RHEL</strong></p>
+<p align="center">Script gốc: <strong>Sanvv - HOSTVN.NET Technical</strong> (<a href="https://hostvn.vn/">hostvn.vn</a>). Bản này được tiếp tục bảo trì tại <a href="https://github.com/hao159/linux-lemp-stack">hao159/linux-lemp-stack</a>.</p>
 
-<p align="center"> <img src="https://blog.hostvn.net/wp-content/uploads/2020/07/logo-big-2.png" /> </p>
+---
 
-########################################################################################
+Script viết bằng shell dùng để cài đặt và quản lý LEMP Stack (Nginx - MariaDB - PHP-FPM) qua menu `hostvn`.
 
-Script được viết bằng shell dùng để cài đặt LEMP Stack (Nginx - MariaDB - PHP-FPM) trên Ubuntu (18.04, 20.04), Debian 10.
+<b>Vui lòng không sao chép, phát hành lại với mục đích thương mại. Xin cảm ơn.</b>
 
-<b>Vui lòng không sao chép, phát hành lại với mục đích thương mại, donate. Xin cảm ơn.</b>
+## 1. Hệ điều hành hỗ trợ
 
-## 1. Chi tiết Script:
+| Họ | Bản phân phối | Phiên bản | Nguồn PHP | Firewall |
+|----|---------------|-----------|-----------|----------|
+| Debian | Ubuntu | 22.04, 24.04, 26.04 | PPA Ondřej (hoặc packages.sury.org) | ufw |
+| Debian | Debian | 11, 12, 13 | packages.sury.org | ufw |
+| RHEL | AlmaLinux, Rocky Linux, Oracle Linux, CentOS Stream, RHEL | 8, 9, 10 | Remi | firewalld |
 
-### 1.1. Cài đặt
+- Yêu cầu: máy **chưa cài** web server/database, tối thiểu 512MB RAM, có `systemd`, chạy bằng `root`.
+- Trên họ RHEL, SELinux được chuyển sang `permissive` (PHP-FPM cần đọc `/home/<user>/<site>`).
+- CentOS 7 và Ubuntu 18.04/20.04 đã hết vòng đời nên không còn được hỗ trợ.
 
-- Cập nhật liên tục, cung cấp Menu giúp dễ dàng thao tác, tự động cài đặt.
-- Cài đặt các phần mềm với phiên bản mới nhất từ chính trang chủ.
-- Mariadb: 10.5.
-- Phiên bản Nginx Stable.
-- Cho phép lựa chọn phiên bản PHP: 5.6, 7.0, 7.1, 7.2, 7.3, 7.4, 8.0
-- phpMyAdmin 4.9.x nếu cài đặt PHP mặc định là 5.6, phpMyAdmin 5.0.x nếu cài đặt PHP mặc định là 7.x.
-- Cấu hình Nginx FastCGI cache
-- Cấu hình Nginx Pagespeed
-- Cài đặt PHPMemcachedAdmin, phpRedisAdmin, Opcache Dashboard.
-- Cài đặt memcached, redis cache. (Mặc định sẽ không bật).
-- Cài đặt Fail2ban.
-- Tích hợp Let's Encrypt SSL.
-- Tích hợp CloudFlare DNS API giúp xác thực SSL nhanh hơn.
-- Cung cấp Menu nâng cấp Nginx, MariaDB, PHP, Redis, Memcached, phpMyAdmin.
-- Cài đặt WP-CLI, Composer, supervisor, Rclone.
-- Cài đặt: ClamAV, ImunifyAV.
-- KHÔNG THU THẬP BẤT KỲ THÔNG TIN GÌ TRÊN VPS CỦA BẠN.
+## 2. Phần mềm được cài
 
-### 1.2. Tối ưu
+- **Nginx** (bản stable, build từ source để mọi hệ điều hành có cùng module): Brotli, headers-more, cache purge, VTS, FastCGI cache.
+- **PHP**: 8.5, 8.4, 8.3, 8.2, 8.1, 8.0, 7.4 — chạy song song hai phiên bản, đổi phiên bản qua menu.
+- **MariaDB** 11.8 LTS, **phpMyAdmin** 5.2.
+- WP-CLI, Composer, Rclone, acme.sh (Let's Encrypt), Fail2ban, Opcache Dashboard.
+- Tuỳ chọn qua menu: Redis, Memcached, Node.js, ClamAV/ImunifyAV, ionCube.
 
-- Cấu hình tối ưu MySQL, Nginx, PHP, Opcache, Memcached, Redis phù hợp theo thông số của VPS.
-- Cấu hình Brotli Compress.
-- Cấu hình rewrite URL với một số mã nguồn phổ biến: WordPress, Laravel, Opencart, Magento, Drupal ...
-- Cho phép chạy song song hai phiên bản PHP.
-- Quản lý FTP dễ dàng trong trường hợp bạn thuê coder và chỉ muốn họ được phép access vào thư mục nhất định.
-- Cho phép lựa chọn Redis Cache hoặc Memcached giúp tăng tốc độ website.
-- Cho phép cấu hình tự động gia hạn Let's Encrypt.
-- Menu hỗ trợ cấu hình SSL trả phí.
-- Menu xem error log Nginx, Mysql, PHP và xem theo từng tên miền cụ thể.
-- Cronjob tự động cập nhật dải IP mới nhất của Cloudflare cho Nginx và CSF Firewall.
-- And More ...
+Phiên bản các phần mềm nằm trong file [`version`](version) — chỉ cần sửa file này để nâng cấp.
 
-### 1.3. Bảo mật
+## 3. Cài đặt
 
-- Cấu hình tăng cường bảo mật từ tầng webserver.
-- Cấu hình website chạy với user khác nhau hạn chế lây lan mã độc giữa các website.
-- Disable các hàm nguy hiểm, bật open_basedir và một số config khác nhằm tăng cường bảo mật.
-- Auto block bruteforce SSH, SFTP, Admin Tool .... với Fail2ban.
-- Block run shell trong thư mục uploads WordPress. Chặn truy cập các thư mục, file nhạy cảm trên WordPress.
-- Chống Bruteforce wp-admin.
-- BLock, Unblock IP dễ dàng với menu quản lý Firewall.
-- Disable User API - /wp-json/wp/v2/users - trên WordPress tránh lộ thông tin User.
-- Thay đổi Port SSH tránh scan SSH.
-- Cho phép thay đổi port Admin.
-- Cho phép thay đổi port SSH/SFTP.
-- Tự động tạo mật khẩu mạnh.
-- Scan Malware với Clamav, ImunifyAV.
-- And More ...
+### 3.1. VPS public (production)
 
-### 1.4. Quản lý WordPress
+```bash
+curl -sO https://raw.githubusercontent.com/hao159/linux-lemp-stack/master/install && chmod +x install && ./install
+```
 
-- Kiểm tra phiên bản WordPress đang sử dụng.
-- Cập nhật WordPress.
-- Cập nhật plugins.
-- Tối ưu Database.
-- Repair Database.
-- Sao lưu dữ liệu (Local/GG Drive).
-- Khôi phục dữ liệu (Local/GG Drive).
-- Thay đổi tên miền.
-- Đổi mật khẩu admin (wp-admin).
-- Cài đặt WordPress tự động.
-- Bật/tắt Yoast Seo config.
-- Bật/Tắt Rank Math Seo config.
-- Cấu hình Nginx với một số plugins cache phổ biến: WP-Rocket, w3 total cache, wp supercache, Cache Enabler, Swift Performance, Fast cache.
-- Thêm cache key tránh trùng lặp nội dung giữa các site khi dùng memcached hoặc redis.
-- Bật/tắt Debug.
-- Bật/tắt chế độ bảo trì.
-- Bật/Tắt disable xmlrpc (Mặc định sẽ disable xmlrpc để tránh bị khai thác DDOS).
-- Huỷ kích hoạt toàn bộ plugins.
-- Random database prefix khi sử dụng chức năng cài đặt tự động.
-- And more ...
+### 3.2. Dev server nội bộ (truy cập bằng IP:PORT)
 
-### 1.5. Sao lưu/Khôi phục dữ liệu
-- Backup và restore dữ liệu từ Google Drive với Rclone.
-- Backup, restore tại Local.
-- Thiết lập số bản backup lưu trữ.
-- Quản lý các bản sao lưu.
-- Cho phép kết nối nhiều tài khoản Google Drive.
+```bash
+curl -sO https://raw.githubusercontent.com/hao159/linux-lemp-stack/master/install && chmod +x install && ./install --dev
+```
 
-## 2. Yêu cầu
+Khác biệt của chế độ `--dev`:
 
-- VPS tối thiểu 512MB ram và chưa cài đặt bất kỳ dịch vụ nào.
-- Ubuntu 18.04, 20.04, Debian 10.
+- Dùng IP nội bộ của máy (không dò IP public), email là tuỳ chọn.
+- Không đổi port SSH, không tinh chỉnh kernel (`sysctl`), không cài Fail2ban, không cài acme.sh, **không tự reboot**.
+- Không tự bật firewall: nếu ufw/firewalld đang tắt thì giữ nguyên; nếu đang bật thì chỉ mở thêm các port cần thiết.
+- PHP: `display_errors = On`, `opcache.revalidate_freq = 0` (sửa code thấy ngay).
 
-## 3. Cách cài đặt
+Hoặc cài từ bản clone:
 
-`curl -sO https://scripts.hostvn.net/install && chmod +x install && ./install`
+```bash
+git clone https://github.com/hao159/linux-lemp-stack.git && cd linux-lemp-stack && bash install --dev
+```
 
-## 4. Các tính năng sẽ phát triển
+Log cài đặt: `/opt/install.txt`. Thông tin đăng nhập: `/var/hostvn/.hostvn.conf`.
 
-- Các tính năng theo request của người dùng
+## 4. Tạo website chạy bằng IP:PORT
 
-## 5. Cách sử dụng
+`hostvn` → **1. Quản lý Domain** → **2. Thêm domain** → chọn **IP:PORT**.
 
-- Vui lòng truy cập: https://help.hostvn.vn/
+1. Nhập port (1024-65535), ví dụ `8081`.
+2. Nhập tên project, ví dụ `shop` (bỏ trống sẽ là `site8081`).
+3. Chọn mã nguồn (WordPress, Laravel, ...) và database như bình thường.
 
-## 6. Nguồn download các phần mềm
+Kết quả:
 
-- Nginx: http://nginx.org/en/download.html
-- MariaDB: https://downloads.mariadb.org/
-- PHP: https://www.php.net/
+- Website truy cập tại `http://<IP-server>:8081`.
+- Mã nguồn tại `/home/<user>/shop.test/public_html` (`shop.test` là định danh nội bộ của website trong menu).
+- Port được mở trên firewall nếu firewall đang bật, và đóng lại khi xoá website.
+- Cài tự động WordPress/Laravel sẽ dùng đúng URL `http://IP:PORT`.
+
+Website IP:PORT dùng được các chức năng: xoá, đổi phiên bản PHP, rewrite vhost, cấu hình PHP, backup, các công cụ WordPress. Các chức năng cần tên miền (SSL, alias, redirect, đổi domain) sẽ từ chối website loại này. Chế độ IP:PORT cũng dùng được trên máy cài ở chế độ production.
+
+## 5. Cấu trúc source
+
+```
+install              Kiểm tra hệ thống, tải source, gọi bộ cài
+hostvn               Bộ cài LEMP Stack
+version              Phiên bản các phần mềm + phiên bản script
+menu/helpers/os      Lớp trừu tượng hệ điều hành (apt/dnf, ufw/firewalld, PHP, MariaDB, build Nginx)
+menu/                Menu quản lý (cài vào /var/hostvn/menu, lệnh: hostvn)
+```
+
+Trên họ RHEL, PHP của Remi được ánh xạ về cùng bố cục với Debian để toàn bộ menu dùng chung đường dẫn:
+
+```
+/etc/php/8.4/fpm            -> /etc/opt/remi/php84
+/etc/php/8.4/fpm/conf.d     -> php.d
+/etc/php/8.4/fpm/pool.d     -> php-fpm.d
+php8.4-fpm.service          -> php84-php-fpm.service
+/usr/bin/php8.4             -> /opt/remi/php84/root/usr/bin/php
+```
+
+Dùng fork riêng: đặt biến môi trường trước khi cài, và sửa `REPO_SLUG` trong `menu/helpers/os` để menu cập nhật từ repo của bạn.
+
+```bash
+REPO_SLUG=ten-ban/linux-lemp-stack REPO_BRANCH=master ./install
+```
+
+## 6. Tính năng menu
+
+- **Domain**: thêm/xoá/đổi domain, alias, redirect, clone, đổi phiên bản PHP, bảo vệ thư mục, website IP:PORT.
+- **SSL**: Let's Encrypt (kèm CloudFlare DNS API), SSL trả phí.
+- **Cache**: Nginx FastCGI cache, Redis, Memcached, Opcache.
+- **LEMP**: quản lý Nginx (update/rebuild), PHP (đổi phiên bản, PHP thứ hai, ionCube, thông số), MariaDB, log.
+- **Firewall**: mở port, block/unblock IP (ufw hoặc firewalld + Fail2ban).
+- **WordPress**: cài tự động, cập nhật, tối ưu database, bảo mật, cấu hình plugin cache/SEO.
+- **Backup**: local, Google Drive, OneDrive (Rclone), cronjob tự động.
+- **Công cụ**: Node.js, antivirus, nén ảnh, thông báo Telegram, cập nhật script.
+
+## 7. Thay đổi so với bản gốc
+
+- Không còn phụ thuộc `scripts.hostvn.net`: source và file `version` lấy từ GitHub, phần mềm tải từ trang chủ của từng dự án.
+- Bỏ ngx_pagespeed (dự án đã ngừng phát triển, không build được với toolchain hiện tại).
+- Extension PHP Redis/Memcached/igbinary cài bằng gói dựng sẵn thay vì biên dịch.
+- Fail2ban giữ `jail.conf` của bản phân phối, chỉ ghi phần ghi đè vào `jail.d/`.
+- Không ghi đè `sources.list`, `resolv.conf`; cấu hình kernel ghi vào `/etc/sysctl.d/99-hostvn.conf`.
+
+## 8. Nguồn download các phần mềm
+
+- Nginx: https://nginx.org/en/download.html
+- MariaDB: https://mariadb.org/download/
+- PHP: https://www.php.net/ — https://deb.sury.org/ — https://rpms.remirepo.net/
 - phpMyAdmin: https://www.phpmyadmin.net/
-- PHPMemcachedAdmin: https://github.com/elijaa/phpmemcachedadmin
-- phpRedisAdmin: https://github.com/erikdubbelboer/phpRedisAdmin
-- Rclone: https://rclone.org/
-- WP-CLI: https://wp-cli.org/
-- Composer: https://getcomposer.org/
-- ClamAV: https://www.clamav.net/
-- ImunifyAV: https://www.imunify360.com/antivirus
+- Rclone: https://rclone.org/ · WP-CLI: https://wp-cli.org/ · Composer: https://getcomposer.org/
 
-## 7. Contact
+## 9. Credits
 
-- Homepage: https://hostvn.vn , https://hostvn.net
-- Group: hhttps://www.facebook.com/groups/hostvn.vn
-- Email: Sanvv@hostvn.com
-
-## 8. Feedback
-
-- Do chưa có nhiều kinh nghiệm nên Scripts khó tránh khỏi thiếu sót, rất mong nhận được ý kiến đóng góp của các bạn để Scripts ngày càng hoàn thiện hơn.
-- Mọi ý kiến đóng góp các bạn vui lòng gửi về sanvv@hostvn.com, Groups Facebook: https://www.facebook.com/groups/hostvn.vn hoặc tạo Github Issues.
-
-## 9. Contributors & Credits
-### Developers / Maintainers
-- Sanvv
-
-### Contributors
-
+- Tác giả script gốc: **Sanvv** — HOSTVN.NET (https://hostvn.vn, https://hostvn.net)
+- Bảo trì bản này: https://github.com/hao159/linux-lemp-stack

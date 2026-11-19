@@ -22,7 +22,11 @@ _list_domain(){
             domain=${entry/./}
             domain=${domain//.conf/}
             if [ "$domain" != '*' ]; then
-                domains+=("${domain}")
+                if [ -n "$(_site_port "${domain}")" ]; then
+                    domains+=("${domain}  ->  $(_site_url "${domain}")")
+                else
+                    domains+=("${domain}")
+                fi
             fi
         done
 

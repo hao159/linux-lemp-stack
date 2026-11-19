@@ -1,11 +1,13 @@
 #!/bin/bash
 
 exec 19>/opt/install.txt
+chmod 600 /opt/install.txt
 BASH_XTRACEFD=19
 set -x
 
 ######################################################################
-#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#      Auto Install & Optimize LEMP Stack                            #
+#      Ubuntu / Debian / AlmaLinux / Rocky / Oracle Linux / CentOS   #
 #                                                                    #
 #                Author: Sanvv - HOSTVN Technical                    #
 #                  Website: https://hostvn.vn                        #
@@ -22,26 +24,41 @@ DIR=$(pwd)
 RED='\033[0;31m'
 NC='\033[0m'
 
-SCRIPTS_VERSION="0.1.0"
-IPADDRESS=$(curl -s http://cyberpanel.sh/?ip)
-DIR=$(pwd)
+# Source directory (repository checkout) and OS abstraction layer
+LEMP_SRC_DIR="${LEMP_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+export LEMP_SRC_DIR
+# shellcheck source=menu/helpers/os
+source "${LEMP_SRC_DIR}/menu/helpers/os"
+
+# prod = public VPS, dev = internal dev server (sites on IP:PORT)
+INSTALL_MODE="${INSTALL_MODE:-prod}"
+
+SCRIPTS_VERSION=$(get_version script_version)
 BASH_DIR="/var/hostvn"
 GITHUB_RAW_LINK="https://raw.githubusercontent.com"
-EXT_LINK="https://scripts.hostvn.net"
-UPDATE_LINK="https://scripts.hostvn.net/update"
 FILE_INFO="${BASH_DIR}/.hostvn.conf"
 HOSTNAME=$(hostname)
 PHP2_RELEASE="no"
 
+if [ "${INSTALL_MODE}" == "dev" ]; then
+    IPADDRESS=$(get_local_ip)
+    PHP_DISPLAY_ERRORS="On"
+    OPCACHE_REVALIDATE="0"
+else
+    IPADDRESS=$(get_public_ip)
+    PHP_DISPLAY_ERRORS="Off"
+    OPCACHE_REVALIDATE="180"
+fi
+
 # Copyright
 AUTHOR="HOSTVN.VN"
-AUTHOR_CONTACT="https://www.facebook.com/groups/hostvn.vn"
+AUTHOR_CONTACT="https://github.com/${REPO_SLUG}"
 
 # Service Version
-PHPMYADMIN_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "phpmyadmin_version=" | cut -f2 -d'=')
-MARIADB_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "mariadb_version=" | cut -f2 -d'=')
+PHPMYADMIN_VERSION=$(get_version phpmyadmin_version)
+MARIADB_VERSION=$(get_version mariadb_version)
 # shellcheck disable=SC2207
-PHP_LIST=($(curl -s https://scripts.hostvn.net/ubuntu/update/version | grep "php_list=" | cut -f2 -d'='))
+PHP_LIST=($(get_version php_list))
 
 # Set Lang
 OPTION_CHANGE_SSH="Ban co muon thay doi port SSH khong ? "
@@ -53,9 +70,8 @@ ENTER_OPTION_PHP_2="Nhap vao lua chon cua ban [1-2]: "
 WRONG_PHP_SELECT_2="Ban nhap sai. Vui long nhap lai."
 INVALID_PHP2_OPTION="${RED}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}"
 SELECT_PHP_2="Lua chon phien ban PHP thu hai ban muon su dung:"
-LOGIN_NOTI1="Cam on ban da su dung dich vu cua ${AUTHOR}."
-LOGIN_NOTI2="Neu can ho tro vui long truy cap ${AUTHOR_CONTACT}"
-LOGIN_NOTI3="Truoc khi dat cau hoi vui long xem Document: https://doc.hostvn.vn/"
+LOGIN_NOTI1="LEMP Stack Scripts (${AUTHOR}) - ${OS_ID} ${OS_VERSION_ID}."
+LOGIN_NOTI2="Source: ${AUTHOR_CONTACT}"
 LOGIN_NOTI4="De mo menu ban go lenh sau:  hostvn"
 
 # Random Port
@@ -70,10 +86,76 @@ USR_DIR="/usr/share"
 CPU_CORES=$(grep -c "processor" /proc/cpuinfo)
 RAM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 SWAP_TOTAL=$(awk '/SwapFree/ {print $2}' /proc/meminfo)
-PHP_MEM=${RAM_TOTAL}+${SWAP_TOTAL}
+PHP_MEM=$((RAM_TOTAL + SWAP_TOTAL))
 MAX_CLIENT=$((CPU_CORES * 1024))
 
-rm -rf "${DIR}"/hostvn
+fatal() {
+    set +x
+    printf "${RED}%s${NC}\n" "$1"
+    printf "${RED}%s${NC}\n" "Cai dat that bai. Xem log: /opt/install.txt"
+    exit 1
+}
+
+############################################
+# Prepare system
+############################################
+welcome() {
+    clear
+    printf "========================================================\n"
+    echo "        Auto Install & Optimize LEMP Stack"
+    printf "        OS: %s %s - Mode: %s\n" "${OS_ID}" "${OS_VERSION_ID}" "${INSTALL_MODE}"
+    printf "========================================================\n"
+    echo ""
+    echo "Chuan bi cai dat..."
+    sleep 2
+}
+
+# Only touch the resolver when name resolution really does not work
+check_dns_server() {
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        cp /etc/resolv.conf /etc/resolv.conf."$(date +%Y-%m-%d)" 2>/dev/null
+        echo "nameserver 1.1.1.1" >>/etc/resolv.conf
+    fi
+}
+
+create_swap() {
+    swap="$(swapon --show --noheadings 2>/dev/null)"
+    [ -n "${swap}" ] && return 0
+
+    clear
+    while true; do
+        read -r -p "Ban co muon tao swap hay khong ? (y/n) " confirm_swap
+        echo
+        if [[ "${confirm_swap}" =~ ^([yYnN])$ ]]; then
+            break
+        fi
+        printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long nhap lai."
+    done
+
+    if [[ "${confirm_swap}" =~ ^([yY])$ ]]; then
+        while true; do
+            echo "Nhap vao dung luong swap muon tao. (VD: 1G nhap so 1, 2G nhap so 2)"
+            read -r -p "Nhap vao dung luong swap muon tao (Nhap 0 de huy tao swap): " swap_size
+            if [[ ${swap_size} =~ ^[0-9]+$ ]]; then
+                break
+            fi
+            printf "${RED}%s${NC}\n" "Gia tri ban nhap khong dung. Vui long nhap lai."
+        done
+
+        if [ "${swap_size}" != 0 ]; then
+            fallocate -l "${swap_size}"G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$((swap_size * 1024))
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >>/etc/fstab
+        fi
+    fi
+}
+
+set_timezone() {
+    timedatectl set-timezone Asia/Ho_Chi_Minh 2>/dev/null ||
+        ln -sf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
+}
 
 ############################################
 # Function
@@ -99,13 +181,12 @@ random_string() {
 }
 
 valid_ip() {
-    # shellcheck disable=SC2166
-    if [ -n "$1" -a -z "${*##*\.*}" ]; then
-        ipcalc "$1" |
-            awk 'BEGIN{FS=":";is_invalid=0} /^INVALID/ {is_invalid=1; print $1} END{exit is_invalid}'
-    else
-        return 1
-    fi
+    local IFS=. o
+    [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+    for o in $1; do
+        [[ "${o}" -le 255 ]] || return 1
+    done
+    return 0
 }
 
 ############################################
@@ -123,9 +204,17 @@ create_bash_dir() {
 set_email() {
     clear
     while true; do
-        read -r -p "Nhap vao email cua ban: " ADMIN_EMAIL
+        if [ "${INSTALL_MODE}" == "dev" ]; then
+            read -r -p "Nhap vao email cua ban (Enter de bo qua): " ADMIN_EMAIL
+            if [ -z "${ADMIN_EMAIL}" ]; then
+                ADMIN_EMAIL="admin@localhost.localdomain"
+                break
+            fi
+        else
+            read -r -p "Nhap vao email cua ban: " ADMIN_EMAIL
+        fi
         echo
-        if [[ "${ADMIN_EMAIL}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; then
+        if [[ "${ADMIN_EMAIL}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
             echo "Email cua ban la: ${ADMIN_EMAIL}."
             break
         else
@@ -140,7 +229,6 @@ ssh_login_notify() {
         {
             echo "echo \"${LOGIN_NOTI1}\""
             echo "echo \"${LOGIN_NOTI2}\""
-            echo "echo \"${LOGIN_NOTI3}\""
             echo "echo \"${LOGIN_NOTI4}\""
         } >>"$HOME"/.bashrc
     fi
@@ -150,12 +238,22 @@ ssh_login_notify() {
 # Option Install
 ############################################
 input_ip() {
-    echo "Nhap vao dia chi IP cua VPS. Bam Enter de script tu detect IP Public."
-    read -r -p "Nhap vao dia chi IP cua VPS: " IPADDRESS_NEW
-    if [ -n "${IPADDRESS_NEW}" ] && valid_ip "${IPADDRESS_NEW}"; then
-        IPADDRESS=${IPADDRESS_NEW}
+    if [ "${INSTALL_MODE}" == "dev" ]; then
+        echo "Che do DEV: website se truy cap bang IP:PORT trong mang noi bo."
+        echo "IP noi bo phat hien duoc: ${IPADDRESS}"
     else
-        printf "IP ban nhap khong chinh xac. Script se tu dong detect IP Public cua VPS."
+        echo "IP Public phat hien duoc: ${IPADDRESS}"
+    fi
+    read -r -p "Nhap vao dia chi IP cua server (Enter de dung IP tren): " IPADDRESS_NEW
+    if [ -n "${IPADDRESS_NEW}" ]; then
+        if valid_ip "${IPADDRESS_NEW}"; then
+            IPADDRESS=${IPADDRESS_NEW}
+        else
+            printf "%s\n" "IP ban nhap khong chinh xac. Script se dung IP: ${IPADDRESS}"
+        fi
+    fi
+    if [ -z "${IPADDRESS}" ]; then
+        fatal "Khong xac dinh duoc dia chi IP cua server."
     fi
 }
 
@@ -279,364 +377,31 @@ check_duplicate_php() {
 ############################################
 # Install LEMP Stack
 ############################################
-#install_nginx() {
-#    apt-get install -y curl gnupg2 ca-certificates lsb-release
-#    apt-get install build-essential zlib1g-dev libpcre3 libpcre3-dev unzip uuid-dev -y
-#    apt-get install -y git build-essential libpcre3 libpcre3-dev libssl-dev libtool autoconf apache2-dev libxml2-dev \
-#        libcurl4-openssl-dev automake pkgconf -y
-#    apt autoremove -y
-#    # shellcheck disable=SC2006
-#    echo "deb http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" |
-#        tee /etc/apt/sources.list.d/nginx.list
-#    curl -fsSL https://nginx.org/keys/nginx_signing.key | apt-key add -
-#    apt-key fingerprint ABF5BD827BD9BF62
-#    apt-get -y update
-#    apt-get -y install nginx
-#
-#    systemctl start nginx
-#    systemctl enable nginx
-#}
-
-#install_nginx(){
-#    apt-get install build-essential zlib1g-dev libpcre3 libpcre3-dev unzip uuid-dev -y
-#    apt autoremove -y
-#    UPDATE_LINK="https://scripts.hostvn.net/update"
-#    MODULE_PATH="/usr/share/nginx_module"
-#    mkdir -p "${MODULE_PATH}"
-#    NGINX_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "nginx_version=" | cut -f2 -d'=')
-#    NPS_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "nps_version=" | cut -f2 -d'=')
-#    ngx_cache_purge_version=$(curl -s ${UPDATE_LINK}/version | grep "ngx_cache_purge_version=" | cut -f2 -d'=')
-#    openssl_version=$(curl -s ${UPDATE_LINK}/version | grep "openssl_version=" | cut -f2 -d'=')
-#    pcre_version=$(curl -s ${UPDATE_LINK}/version | grep "pcre_version=" | cut -f2 -d'=')
-#    zlib_version=$(curl -s ${UPDATE_LINK}/version | grep "zlib_version=" | cut -f2 -d'=')
-#
-#    cd_dir "${MODULE_PATH}"
-#
-#    wget -O- https://github.com/apache/incubator-pagespeed-ngx/archive/v"${NPS_VERSION}".tar.gz | tar -xz
-#    nps_dir=$(find . -name "*pagespeed-ngx-${NPS_VERSION}" -type d)
-#    cd_dir "$nps_dir"
-#    NPS_RELEASE_NUMBER=${NPS_VERSION/beta/}
-#    NPS_RELEASE_NUMBER=${NPS_VERSION/stable/}
-#
-#    psol_url=https://dl.google.com/dl/page-speed/psol/${NPS_RELEASE_NUMBER}.tar.gz
-#    [ -e scripts/format_binary_url.sh ] && psol_url=$(scripts/format_binary_url.sh PSOL_BINARY_URL)
-#    wget -O- "${psol_url}" | tar -xz
-#
-#    cd_dir "${MODULE_PATH}"
-#    wget -O- http://nginx.org/download/nginx-"${NGINX_VERSION}".tar.gz | tar -xz
-#    wget -O- http://scripts.hostvn.net/ubuntu/ngx_cache_purge-"${ngx_cache_purge_version}".tar.gz | tar -xz
-#    wget -O- http://scripts.hostvn.net/ubuntu/openssl-OpenSSL_"${openssl_version}".tar.gz | tar -xz
-#    wget -O- ftp://ftp.pcre.org/pub/pcre/pcre-"${pcre_version}".tar.gz | tar -xz
-#    wget -O- https://www.zlib.net/zlib-"${zlib_version}".tar.gz | tar -xz
-#    git clone --depth 1 https://github.com/google/ngx_brotli
-#    cd_dir ngx_brotli && git submodule update --init
-#
-#    apt-get install -y git build-essential libpcre3 libpcre3-dev libssl-dev libtool autoconf apache2-dev libxml2-dev \
-#        libcurl4-openssl-dev automake pkgconf
-#    apt-get install bison build-essential ca-certificates curl dh-autoreconf doxygen flex gawk git iputils-ping \
-#        libcurl4-gnutls-dev libexpat1-dev libgeoip-dev liblmdb-dev libpcre3-dev libpcre++-dev libssl-dev libtool \
-#        libxml2 libxml2-dev libyajl-dev locales lua5.3-dev pkg-config wget zlib1g-dev -y
-#    apt autoremove -y
-#
-#    cd_dir "${MODULE_PATH}"
-#    git clone -b nginx_refactoring https://github.com/SpiderLabs/ModSecurity.git
-#    #wget -O- http://scripts.hostvn.net/ubuntu/ModSecurity.tar.gz | tar -xz
-#    cd_dir ModSecurity
-#    ./autogen.sh
-#    ./configure --enable-standalone-module --disable-mlogc
-#    make
-#    cd_dir "${MODULE_PATH}"/nginx-"${NGINX_VERSION}"/
-#    ./configure \
-#        "--user=nginx" \
-#        "--group=nginx" \
-#        "--prefix=/usr" \
-#        "--sbin-path=/usr/sbin" \
-#        "--conf-path=/etc/nginx/nginx.conf" \
-#        "--pid-path=/var/run/nginx.pid" \
-#        "--http-log-path=/var/log/nginx/access_log" \
-#        "--error-log-path=/var/log/nginx/error_log" \
-#        "--without-mail_imap_module" \
-#        "--without-mail_smtp_module" \
-#        "--with-http_ssl_module" \
-#        "--with-http_realip_module" \
-#        "--with-http_stub_status_module" \
-#        "--with-http_gzip_static_module" \
-#        "--with-http_dav_module" \
-#        "--with-http_v2_module" \
-#        "--with-pcre=../pcre-${pcre_version}" \
-#        "--with-pcre-jit" \
-#        "--with-zlib=../zlib-${zlib_version}" \
-#        "--with-openssl=../openssl-OpenSSL_${openssl_version}" \
-#        "--with-openssl-opt=no-nextprotoneg" \
-#        "--add-module=../ngx_cache_purge-${ngx_cache_purge_version}" \
-#        "--add-module=../incubator-pagespeed-ngx-${NPS_VERSION}" \
-#        "--add-module=../ngx_brotli" \
-#        "--add-module=../ModSecurity/nginx/modsecurity" \
-#        "--with-cc-opt='-D FD_SETSIZE=32768'"
-#
-#    make && make install
-#
-#    if [[ -d "/usr/lib/nginx/modules" && ! -d "/etc/nginx/modules" ]]; then
-#        ln -s /usr/lib/nginx/modules /etc/nginx/modules
-#    fi
-#
-#    adduser --system --home /nonexistent --shell /bin/false --no-create-home --disabled-login --disabled-password \
-#        --gecos "nginx user" --group nginx
-#
-#    if [ ! -f "/etc/systemd/system/nginx.service" ]; then
-#        cat >> "/etc/systemd/system/nginx.service" << EOnginx_service
-#[Unit]
-#Description=The nginx HTTP and reverse proxy server
-#After=syslog.target network.target remote-fs.target nss-lookup.target
-#
-#[Service]
-#Type=forking
-#PIDFile=/var/run/nginx.pid
-#ExecStartPre=/usr/sbin/nginx -t -c /etc/nginx/nginx.conf
-#ExecStart=/usr/sbin/nginx -c /etc/nginx/nginx.conf
-#ExecReload=/bin/kill -s HUP \$MAINPID
-#ExecStop=/bin/kill -s QUIT \$MAINPID
-#PrivateTmp=true
-#LimitMEMLOCK=infinity
-#LimitNOFILE=65535
-#
-#[Install]
-#WantedBy=multi-user.target
-#EOnginx_service
-#    fi
-#
-#    sudo systemctl enable nginx.service
-#    sudo systemctl start nginx.service
-#    cd_dir "${DIR}"
-#}
-
-install_nginx(){
-    apt-get install build-essential zlib1g-dev libpcre3 libpcre3-dev unzip uuid-dev -y
-    apt autoremove -y
-    UPDATE_LINK="https://scripts.hostvn.net/ubuntu/update"
-    MODULE_PATH="/usr/share/nginx_module"
-    mkdir -p "${MODULE_PATH}"
-    NGINX_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "nginx_version=" | cut -f2 -d'=')
-    NPS_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "nps_version=" | cut -f2 -d'=')
-    ngx_cache_purge_version=$(curl -s ${UPDATE_LINK}/version | grep "ngx_cache_purge_version=" | cut -f2 -d'=')
-    more_clear_headers_v=$(curl -s ${UPDATE_LINK}/version | grep "more_clear_headers_v=" | cut -f2 -d'=')
-    openssl_version=$(curl -s ${UPDATE_LINK}/version | grep "openssl_version=" | cut -f2 -d'=')
-    pcre_version=$(curl -s ${UPDATE_LINK}/version | grep "pcre_version=" | cut -f2 -d'=')
-    zlib_version=$(curl -s ${UPDATE_LINK}/version | grep "zlib_version=" | cut -f2 -d'=')
-    nginx_module_vts_v=$(curl -s ${UPDATE_LINK}/version | grep "nginx_module_vts_v=" | cut -f2 -d'=')
-
-    cd_dir "${MODULE_PATH}"
-
-    wget -O- https://github.com/apache/incubator-pagespeed-ngx/archive/v"${NPS_VERSION}".tar.gz | tar -xz
-    nps_dir=$(find . -name "*pagespeed-ngx-${NPS_VERSION}" -type d)
-    cd_dir "$nps_dir"
-    NPS_RELEASE_NUMBER=${NPS_VERSION/beta/}
-    NPS_RELEASE_NUMBER=${NPS_VERSION/stable/}
-
-    psol_url=https://dl.google.com/dl/page-speed/psol/${NPS_RELEASE_NUMBER}.tar.gz
-    [ -e scripts/format_binary_url.sh ] && psol_url=$(scripts/format_binary_url.sh PSOL_BINARY_URL)
-    wget -O- "${psol_url}" | tar -xz
-
-    cd_dir "${MODULE_PATH}"
-    wget -O- http://nginx.org/download/nginx-"${NGINX_VERSION}".tar.gz | tar -xz
-    wget -O- http://scripts.hostvn.net/ubuntu/modules/ngx_cache_purge-"${ngx_cache_purge_version}".tar.gz | tar -xz
-    wget -O- http://scripts.hostvn.net/ubuntu/modules/openssl-OpenSSL_"${openssl_version}".tar.gz | tar -xz
-    wget -O- http://scripts.hostvn.net/ubuntu/modules/pcre-"${pcre_version}".tar.gz | tar -xz
-    wget -O- https://www.zlib.net/zlib-"${zlib_version}".tar.gz | tar -xz
-    wget -O- http://scripts.hostvn.net/ubuntu/modules/headers-more-nginx-module-"${more_clear_headers_v}".tar.gz | tar -xz
-    wget -O- https://github.com/vozlt/nginx-module-vts/archive/refs/tags/v"${nginx_module_vts_v}".tar.gz | tar -xz
-
-    git clone --depth 1 https://github.com/google/ngx_brotli
-    cd_dir ngx_brotli && git submodule update --init
-
-    cd_dir "${MODULE_PATH}"/nginx-"${NGINX_VERSION}"/
-    ./configure \
-        "--user=nginx" \
-        "--group=nginx" \
-        "--prefix=/usr" \
-        "--sbin-path=/usr/sbin" \
-        "--conf-path=/etc/nginx/nginx.conf" \
-        "--pid-path=/var/run/nginx.pid" \
-        "--http-log-path=/var/log/nginx/access_log" \
-        "--error-log-path=/var/log/nginx/error_log" \
-        "--without-mail_imap_module" \
-        "--without-mail_smtp_module" \
-        "--with-http_ssl_module" \
-        "--with-http_realip_module" \
-        "--with-http_stub_status_module" \
-        "--with-http_gzip_static_module" \
-        "--with-http_dav_module" \
-        "--with-http_v2_module" \
-        "--with-pcre=../pcre-${pcre_version}" \
-        "--with-pcre-jit" \
-        "--with-zlib=../zlib-${zlib_version}" \
-        "--with-openssl=../openssl-OpenSSL_${openssl_version}" \
-        "--with-openssl-opt=no-nextprotoneg" \
-        "--add-module=../ngx_cache_purge-${ngx_cache_purge_version}" \
-        "--add-module=../incubator-pagespeed-ngx-${NPS_VERSION}" \
-        "--add-module=../headers-more-nginx-module-${more_clear_headers_v}" \
-        "--add-module=../ngx_brotli" \
-        "--add-module=../nginx-module-vts-${nginx_module_vts_v}" \
-        "--with-cc-opt='-D FD_SETSIZE=32768'"
-
-    make && make install
-
-    if [[ -d "/usr/lib/nginx/modules" && ! -d "/etc/nginx/modules" ]]; then
-        ln -s /usr/lib/nginx/modules /etc/nginx/modules
-    fi
-
-    adduser --system --home /nonexistent --shell /bin/false --no-create-home --disabled-login --disabled-password \
-        --gecos "nginx user" --group nginx
-
-    rm -rf /etc/systemd/system/nginx.service
-    cat >> "/etc/systemd/system/nginx.service" << EOnginx_service
-[Unit]
-Description=The nginx HTTP and reverse proxy server
-After=syslog.target network.target remote-fs.target nss-lookup.target
-
-[Service]
-Type=forking
-PIDFile=/var/run/nginx.pid
-ExecStartPre=/usr/sbin/nginx -t -c /etc/nginx/nginx.conf
-ExecStart=/usr/sbin/nginx -c /etc/nginx/nginx.conf
-ExecReload=/bin/kill -s HUP \$MAINPID
-ExecStop=/bin/kill -s QUIT \$MAINPID
-PrivateTmp=true
-LimitMEMLOCK=infinity
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOnginx_service
-
-    sudo systemctl enable nginx.service
-    sudo systemctl start nginx.service
+install_nginx() {
+    nginx_build "$(get_version nginx_version)" || fatal "Build Nginx that bai."
+    nginx_install_service
     cd_dir "${DIR}"
 }
 
 install_mariadb() {
-    apt-get install software-properties-common apt-transport-https -y
-#    sudo apt-key adv --fetch-keys 'https://mariadb.org/mariadb_release_signing_key.asc' << EOF
-#
-#EOF
-#
-#    OS_VER=$(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"')
-#    if [ "${OS_VER}" == "18.04" ]; then
-#        sudo add-apt-repository "deb [arch=amd64,arm64,ppc64el] http://sgp1.mirrors.digitalocean.com/mariadb/repo/${MARIADB_VERSION}/ubuntu bionic main"
-#    elif [ "${OS_VER}" == "20.04" ]; then
-#        sudo add-apt-repository "deb [arch=amd64,arm64,ppc64el] http://sgp1.mirrors.digitalocean.com/mariadb/repo/${MARIADB_VERSION}/ubuntu focal main"
-#    else
-#        clear
-#        printf "%s" "${RED}VPS cua ban khong the ket noi toi server cua MaraiDB. Vui long kiem tra lai Network cua VPS${NC}"
-#        printf "%s" "${RED}Huy cai dat.${NC}"
-#        exit
-#    fi
-    curl -LsS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | sudo bash
-    sudo apt update
-    sudo apt install mariadb-server -y
+    mariadb_install "${MARIADB_VERSION}" || fatal "Cai dat MariaDB that bai."
 }
 
 install_php() {
-    add-apt-repository ppa:ondrej/php <<EOF
-
-EOF
-
-    apt-get update -y
-
-    apt-get -y install php"${PHP_VERSION}" php"${PHP_VERSION}"-fpm php"${PHP_VERSION}"-ldap php"${PHP_VERSION}"-zip \
-        php"${PHP_VERSION}"-cli php"${PHP_VERSION}"-mysql php"${PHP_VERSION}"-gd php"${PHP_VERSION}"-xml \
-        php"${PHP_VERSION}"-mbstring php"${PHP_VERSION}"-common php"${PHP_VERSION}"-soap \
-        php"${PHP_VERSION}"-curl php"${PHP_VERSION}"-bcmath php"${PHP_VERSION}"-snmp php"${PHP_VERSION}"-pspell \
-        php"${PHP_VERSION}"-gmp php"${PHP_VERSION}"-intl php"${PHP_VERSION}"-imap php"${PHP_VERSION}"-enchant \
-        php"${PHP_VERSION}"-xmlrpc php"${PHP_VERSION}"-tidy php"${PHP_VERSION}"-opcache php"${PHP_VERSION}"-cli \
-        php"${PHP_VERSION}"-dev php"${PHP_VERSION}"-imagick php"${PHP_VERSION}"-sqlite3
-
-    if [ "${PHP_VERSION}" != "8.0" ]; then
-        apt -y install php"${PHP_VERSION}"-json
-    fi
-
-    if [ "${PHP_VERSION}" == "5.6" ]; then
-        apt -y install php5.6-mcrypt
-    fi
-
-    if [ -f "/usr/lib/systemd/system/php${PHP_VERSION}-fpm.service" ]; then
-        sed -i '/ExecReload=/a LimitNOFILE=65535' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ExecReload=/a LimitMEMLOCK=infinity' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/LimitNOFILE=65535/a PrivateTmp=true' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/PrivateTmp=true/a ProtectKernelModules=true' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' /usr/lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        systemctl daemon-reload
-    fi
-
-    if [[ -f "/lib/systemd/system/php${PHP_VERSION}-fpm.service" && ! -f "/usr/lib/systemd/system/php${PHP_VERSION}-fpm.service" ]]; then
-        sed -i '/ExecReload=/a LimitNOFILE=65535' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ExecReload=/a LimitMEMLOCK=infinity' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/LimitNOFILE=65535/a PrivateTmp=true' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/PrivateTmp=true/a ProtectKernelModules=true' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' /lib/systemd/system/php"${PHP_VERSION}"-fpm.service
-        systemctl daemon-reload
-    fi
-
-    update-alternatives --set php /usr/bin/php"${PHP_VERSION}"
+    php_install "${PHP_VERSION}" || fatal "Cai dat PHP ${PHP_VERSION} that bai."
+    php_set_default "${PHP_VERSION}"
 }
 
 install_php_2() {
-    apt-get -y install php"${PHP_VERSION_2}" php"${PHP_VERSION_2}"-fpm php"${PHP_VERSION_2}"-ldap php"${PHP_VERSION_2}"-zip \
-        php"${PHP_VERSION_2}"-cli php"${PHP_VERSION_2}"-mysql php"${PHP_VERSION_2}"-gd php"${PHP_VERSION_2}"-xml \
-        php"${PHP_VERSION_2}"-mbstring php"${PHP_VERSION_2}"-common php"${PHP_VERSION_2}"-soap \
-        php"${PHP_VERSION_2}"-curl php"${PHP_VERSION_2}"-bcmath php"${PHP_VERSION_2}"-snmp php"${PHP_VERSION_2}"-pspell \
-        php"${PHP_VERSION_2}"-gmp php"${PHP_VERSION_2}"-intl php"${PHP_VERSION_2}"-imap php"${PHP_VERSION_2}"-enchant \
-        php"${PHP_VERSION_2}"-xmlrpc php"${PHP_VERSION_2}"-tidy php"${PHP_VERSION_2}"-opcache php"${PHP_VERSION_2}"-cli \
-        php"${PHP_VERSION_2}"-dev php"${PHP_VERSION_2}"-imagick php"${PHP_VERSION_2}"-sqlite3
-
-    if [ "${PHP_VERSION_2}" != "8.0" ]; then
-        apt -y install php"${PHP_VERSION_2}"-json
-    fi
-
-    if [ "${PHP_VERSION_2}" == "5.6" ]; then
-        apt -y install php5.6-mcrypt
-    fi
-
-    PHP2_RELEASE="yes"
-    if [ -f "/usr/lib/systemd/system/php${PHP_VERSION_2}-fpm.service" ]; then
-        sed -i '/ExecReload=/a LimitNOFILE=65535' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ExecReload=/a LimitMEMLOCK=infinity' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/LimitNOFILE=65535/a PrivateTmp=true' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/PrivateTmp=true/a ProtectKernelModules=true' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' /usr/lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        systemctl daemon-reload
-    fi
-
-    if [[ -f "/lib/systemd/system/php${PHP_VERSION_2}-fpm.service" && ! -f "/usr/lib/systemd/system/php${PHP_VERSION_2}-fpm.service" ]]; then
-        sed -i '/ExecReload=/a LimitNOFILE=65535' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ExecReload=/a LimitMEMLOCK=infinity' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/LimitNOFILE=65535/a PrivateTmp=true' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/PrivateTmp=true/a ProtectKernelModules=true' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectKernelModules=true/a ProtectKernelTunables=true' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectKernelTunables=true/a ProtectControlGroups=true' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/ProtectControlGroups=true/a RestrictRealtime=true' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        sed -i '/RestrictRealtime=true/a RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX' /lib/systemd/system/php"${PHP_VERSION_2}"-fpm.service
-        systemctl daemon-reload
+    if php_install "${PHP_VERSION_2}"; then
+        PHP2_RELEASE="yes"
+    else
+        MULTI_PHP="n"
+        printf "${RED}%s${NC}\n" "Cai dat PHP ${PHP_VERSION_2} that bai, bo qua phien ban PHP thu hai."
     fi
 }
 
 install_phpmyadmin() {
-    if [ "${PHP_VERSION}" == "5.6" ]; then
-        PHPMYADMIN_VERSION=$(curl -s ${UPDATE_LINK}/version | grep "phpmyadmin4_version=" | cut -f2 -d'=')
-    fi
-
-    if [ "${PHP_VERSION}" != "5.6" ]; then
-        DECLARE="declare(strict_types=1);"
-    fi
     if [ -f "${DEFAULT_DIR_TOOL}" ]; then
         rm -rf "${DEFAULT_DIR_TOOL}"
     fi
@@ -645,26 +410,22 @@ install_phpmyadmin() {
     fi
     cd_dir "${DEFAULT_DIR_TOOL}"
 
-    wget -O- https://scripts.hostvn.net/modules/phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.tar.gz | tar -xz
-
+    rm -rf phpmyadmin
+    wget -qO- https://files.phpmyadmin.net/phpMyAdmin/"${PHPMYADMIN_VERSION}"/phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.tar.gz | tar -xz
     mv phpMyAdmin-"${PHPMYADMIN_VERSION}"-english phpmyadmin
-    rm -rf phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.zip
     rm -rf "${DEFAULT_DIR_TOOL}"/phpmyadmin/setup
 
-    mv "${DEFAULT_DIR_TOOL}"/phpmyadmin/config.sample.inc.php "${DEFAULT_DIR_TOOL}"/phpmyadmin/config.inc.php
-
-    BLOWFISH_SECRET=$(random_string 64)
+    BLOWFISH_SECRET=$(random_string 31)
     mkdir -p "${DEFAULT_DIR_TOOL}"/phpmyadmin/tmp
 
     cat >"${DEFAULT_DIR_TOOL}/phpmyadmin/config.inc.php" <<EOCONFIGINC
 <?php
-${DECLARE}
+declare(strict_types=1);
 \$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';
 \$i = 0;
 \$i++;
 \$cfg['Servers'][\$i]['auth_type'] = 'cookie';
 \$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['connect_type'] = 'tcp';
 \$cfg['Servers'][\$i]['compress'] = false;
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
 \$cfg['UploadDir'] = '';
@@ -675,35 +436,28 @@ ${DECLARE}
 \$cfg['CaptchaLoginPublicKey'] = '';
 \$cfg['CaptchaLoginPrivateKey'] = '';
 \$cfg['ExecTimeLimit'] = 600;
-\$cfg['DefaultCharset'] = 'utf8';
-\$cfg['DefaultConnectionCollation'] = 'utf8_general_ci';
 EOCONFIGINC
 
     chown -R nginx:nginx "${DEFAULT_DIR_TOOL}"/phpmyadmin
 
-    cat >> "/opt/phpmyadmin.temp" <<EOphpmyadmin_temp
-CREATE DATABASE IF NOT EXISTS phpmyadmin;
-FLUSH PRIVILEGES;
-EOphpmyadmin_temp
-
-    mysql -u root -p"${sql_root_pass}" < /opt/phpmyadmin.temp
-    rm -f /opt/phpmyadmin.temp
-
-    curl -o phpmyadmin.sql "${EXT_LINK}"/phpmyadmin.sql
-    mysql -u root -p"${sql_root_pass}" phpmyadmin < phpmyadmin.sql
-    rm -rf phpmyadmin.sql
+    # Configuration storage (creates the "phpmyadmin" database)
+    if [ -f "${DEFAULT_DIR_TOOL}/phpmyadmin/sql/create_tables.sql" ]; then
+        mysql -u root -p"${sql_root_pass}" <"${DEFAULT_DIR_TOOL}"/phpmyadmin/sql/create_tables.sql
+    fi
+    cd_dir "${DIR}"
 }
 
 ############################################
 # Install Composer
 ############################################
 install_composer() {
+    cd_dir /opt
     curl -sS https://getcomposer.org/installer | php
-    mv composer.phar /usr/local/bin/composer
-    # Composer 1
-    wget https://getcomposer.org/download/1.10.20/composer.phar
-    mv composer.phar /usr/local/bin/composer1
-    chmod +x /usr/local/bin/composer1
+    if [ -f composer.phar ]; then
+        mv composer.phar /usr/local/bin/composer
+        chmod +x /usr/local/bin/composer
+    fi
+    cd_dir "${DIR}"
 }
 
 ############################################
@@ -1095,42 +849,6 @@ mariadb_calculation() {
     fi
 }
 
-############################################
-# Install Other Library
-############################################
-install_optipng(){
-    optipng_version=$(curl -s ${UPDATE_LINK}/version | grep "optipng_version=" | cut -f2 -d'=')
-    cd_dir /opt
-    wget -O- http://scripts.hostvn.net/modules/optipng-"${optipng_version}".tar.gz | tar -xz
-    cd_dir optipng-"${optipng_version}"
-    ./configure
-    make
-    cp /opt/optipng-"${optipng_version}"/src/optipng/optipng /usr/bin/
-    cd_dir /opt
-    rm -rf /opt/optipng-"${optipng_version}"
-}
-
-install_jpegoptim(){
-    jpegoptim_version=$(curl -s ${UPDATE_LINK}/version | grep "jpegoptim_version=" | cut -f2 -d'=')
-    cd_dir /opt
-    wget -O- http://scripts.hostvn.net/modules/jpegoptim-RELEASE."${jpegoptim_version}".tar.gz | tar -xz
-    cd_dir jpegoptim-RELEASE."${jpegoptim_version}"
-    ./configure
-    make && make strip && make install
-    ln -s /usr/local/bin/jpegoptim /usr/bin/jpegoptim
-    cd_dir /opt
-    rm -rf /opt/jpegoptim-RELEASE."${jpegoptim_version}"
-}
-
-install_pngquant(){
-    cd_dir /opt
-    git clone --recursive https://github.com/kornelski/pngquant.git
-    cd_dir /opt/pngquant
-    ./configure
-    make && make install
-    cd_dir "${DIR}"
-    rm -rf /opt/pngquant
-}
 
 ############################################
 # Config LEMP
@@ -1140,7 +858,7 @@ self_signed_ssl() {
     #Create dhparams
     self_signed_dir="/etc/nginx/ssl/server"
     mkdir -p "${self_signed_dir}"
-    openssl dhparam -out /etc/nginx/ssl/dhparams.pem 2048
+    openssl dhparam -out /etc/nginx/ssl/dhparams.pem 2048 2>/dev/null
     openssl genrsa -out "${self_signed_dir}/server.key" 4096
     openssl req -new -key "${self_signed_dir}/server.key" \
         -out "${self_signed_dir}/server.csr" -subj "/C=VN/ST=Caugiay/L=Hanoi/O=Hostvn/OU=IT Department/CN=${IPADDRESS}"
@@ -1156,8 +874,8 @@ create_nginx_conf() {
     mkdir -p /etc/nginx/conf.d
     mkdir -p /etc/nginx/pagespeed
     mkdir -p /usr/share/nginx/html/
-    chown -R nginx. /usr/share/nginx/html/
-    mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf."$(date +%Y-%m-%d)"
+    chown -R nginx:nginx /usr/share/nginx/html/
+    [ -f /etc/nginx/nginx.conf ] && mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf."$(date +%Y-%m-%d)"
 
     cat >>"/etc/nginx/nginx.conf" <<EONGINXCONF
 user nginx;
@@ -1771,7 +1489,7 @@ EOcf_ipv6
 
     cron_cf_exists=$(crontab -l | grep -w 'updateCloudflareRangeIP')
     if [ -z "${cron_cf_exists}" ]; then
-        crontab -l > updateCf
+        crontab -l > updateCf 2>/dev/null
         echo "0 3 * * * bash /var/hostvn/menu/cronjob/updateCloudflareRangeIP >/dev/null 2>&1" >> updateCf
         crontab updateCf
         rm -rf updateCf
@@ -2169,7 +1887,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2 default_server;
+    listen 443 ssl default_server;
+    http2 on;
     root /usr/share/nginx/html/;
     index index.html index.htm;
 
@@ -2435,7 +2154,7 @@ memory_limit = ${MAX_MEMORY}M
 upload_max_filesize = ${MAX_MEMORY}M
 post_max_size = ${MAX_MEMORY}M
 expose_php = Off
-display_errors = Off
+display_errors = ${PHP_DISPLAY_ERRORS}
 mail.add_x_header = Off
 max_input_nesting_level = 128
 max_input_vars = ${MAX_INPUT_VARS}
@@ -2467,7 +2186,7 @@ memory_limit = ${MAX_MEMORY}M
 upload_max_filesize = ${MAX_MEMORY}M
 post_max_size = ${MAX_MEMORY}M
 expose_php = Off
-display_errors = Off
+display_errors = ${PHP_DISPLAY_ERRORS}
 mail.add_x_header = Off
 max_input_nesting_level = 128
 max_input_vars = ${MAX_INPUT_VARS}
@@ -2493,13 +2212,13 @@ php_opcache() {
         mv "$PHP1_INI_PATH"/10-opcache.ini "$PHP1_INI_PATH"/10-opcache.ini."$(date +%Y-%m-%d)"
     fi
     cat >"$PHP1_INI_PATH/10-opcache.ini" <<EOphp_opcache
-zend_extension=opcache.so
+$(php_opcache_load_line "${PHP_VERSION}")
 opcache.enable=1
 opcache.memory_consumption=${OPCACHE_MEM}
 opcache.interned_strings_buffer=8
 opcache.max_wasted_percentage=5
 opcache.max_accelerated_files=65407
-opcache.revalidate_freq=180
+opcache.revalidate_freq=${OPCACHE_REVALIDATE}
 opcache.fast_shutdown=0
 opcache.enable_cli=0
 opcache.save_comments=1
@@ -2525,13 +2244,13 @@ php_2_opcache() {
         mv "$PHP2_INI_PATH"/10-opcache.ini "$PHP2_INI_PATH"/10-opcache.ini."$(date +%Y-%m-%d)"
     fi
     cat >"$PHP2_INI_PATH/10-opcache.ini" <<EOphp_opcache
-zend_extension=opcache.so
+$(php_opcache_load_line "${PHP_VERSION_2}")
 opcache.enable=1
 opcache.memory_consumption=${OPCACHE_MEM}
 opcache.interned_strings_buffer=8
 opcache.max_wasted_percentage=5
 opcache.max_accelerated_files=65407
-opcache.revalidate_freq=180
+opcache.revalidate_freq=${OPCACHE_REVALIDATE}
 opcache.fast_shutdown=0
 opcache.enable_cli=0
 opcache.save_comments=1
@@ -2556,12 +2275,14 @@ EOopcache_blacklist
 config_my_cnf() {
     mkdir -p /var/log/mysql
     chown -R mysql:mysql /var/log/mysql
-    mv /etc/mysql/my.cnf /etc/mysql/my.cnf."$(date +%Y-%m-%d)"
+    if [ -e "${MYSQL_CNF}" ] || [ -L "${MYSQL_CNF}" ]; then
+        mv "${MYSQL_CNF}" "${MYSQL_CNF}"."$(date +%Y-%m-%d)"
+    fi
 
-    cat >>"/etc/mysql/my.cnf" <<EOmy_cnf
+    cat >>"${MYSQL_CNF}" <<EOmy_cnf
 [client]
 port = 3306
-socket = /run/mysqld/mysqld.sock
+socket = ${MYSQL_SOCK}
 default-character-set = utf8mb4
 
 [mysql]
@@ -2576,7 +2297,7 @@ init-connect = 'SET NAMES utf8mb4'
 character-set-server = utf8mb4
 #collation-server      = utf8mb4_unicode_ci
 datadir=/var/lib/mysql
-socket = /run/mysqld/mysqld.sock
+socket = ${MYSQL_SOCK}
 
 #bind-address=127.0.0.1
 
@@ -2647,7 +2368,6 @@ innodb_buffer_pool_size = ${innodb_buffer_pool_size}
 innodb_log_file_size = ${innodb_log_file_size}
 innodb_log_buffer_size = ${innodb_log_buffer_size}
 innodb_flush_log_at_trx_commit = 2
-innodb_thread_concurrency = 0
 innodb_lock_wait_timeout=50
 innodb_flush_method = O_DIRECT
 #innodb_support_xa=1
@@ -2692,8 +2412,8 @@ innodb_log_block_size = 512
 log_slow_filter =admin,filesort,filesort_on_disk,full_join,full_scan,query_cache,query_cache_miss,tmp_table,tmp_table_on_disk
 
 [mysqld_safe]
-socket=/var/lib/mysql/mysql.sock
-log-error=/var/log/mysqld/mysqld.log
+socket=${MYSQL_SOCK}
+log-error=/var/log/mysql/mysqld.log
 #nice = -5
 open-files-limit = 8192
 
@@ -2736,52 +2456,42 @@ EOmy_cnf
     sql_root_pass=$(gen_pass)
     sql_admin_pass=$(gen_pass)
 
-    systemctl start mariadb
-    systemctl enable mariadb
-
-    mysql_secure_installation <<EOF
-
-n
-y
-${sql_root_pass}
-${sql_root_pass}
-y
-y
-y
-y
+    mkdir -p /etc/systemd/system/mariadb.service.d
+    cat >/etc/systemd/system/mariadb.service.d/hostvn.conf <<EOF
+[Service]
+LimitNOFILE=655350
+PrivateTmp=true
 EOF
+    systemctl daemon-reload
+    systemctl enable mariadb
+    systemctl restart mariadb || fatal "MariaDB khong khoi dong duoc voi cau hinh moi (${MYSQL_CNF})."
 
-    Q1="CREATE USER 'admin'@'localhost' IDENTIFIED BY '${sql_admin_pass}';"
-    Q2="GRANT ALL PRIVILEGES ON *.* TO 'admin'@'localhost' WITH GRANT OPTION;"
-    Q3="FLUSH PRIVILEGES;"
-    SQL="${Q1}${Q2}${Q3}"
-    mysql -uroot -p"${sql_root_pass}" -e "${SQL}"
-
-    if [ -f "/usr/lib/systemd/system/mariadb.service" ]; then
-        sed -i "s/LimitNOFILE=.*/LimitNOFILE=655350/g" /usr/lib/systemd/system/mariadb.service
-        sed -i "s/PrivateTmp=false/PrivateTmp=true/g" /usr/lib/systemd/system/mariadb.service
-        systemctl daemon-reload
-    fi
-
-    if [[ -f "/lib/systemd/system/mariadb.service" && ! -f "/usr/lib/systemd/system/mariadb.service" ]]; then
-        sed -i "s/LimitNOFILE=.*/LimitNOFILE=655350/g" /lib/systemd/system/mariadb.service
-        sed -i "s/PrivateTmp=false/PrivateTmp=true/g" /lib/systemd/system/mariadb.service
-        systemctl daemon-reload
-    fi
+    # Same result as mysql_secure_installation, without depending on its prompts
+    mysql -uroot <<EOF || fatal "Khong the cau hinh tai khoan MariaDB."
+ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('${sql_root_pass}');
+DELETE FROM mysql.global_priv WHERE User='';
+DELETE FROM mysql.global_priv WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
+CREATE USER IF NOT EXISTS 'admin'@'localhost' IDENTIFIED BY '${sql_admin_pass}';
+GRANT ALL PRIVILEGES ON *.* TO 'admin'@'localhost' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+EOF
 }
 
 ############################################
 # Change SSH Port
 ############################################
 change_ssh_port() {
-    sed -i "s/#Port 22/Port ${SSH_PORT}/g" /etc/ssh/sshd_config
+    sed -i "s/^#\?Port 22$/Port ${SSH_PORT}/" /etc/ssh/sshd_config
 }
 
 ############################################
 # Install ACME
 ############################################
 install_acme() {
-    curl https://get.acme.sh | sh -s email="${ADMIN_EMAIL}"
+    curl -s https://get.acme.sh | sh -s email="${ADMIN_EMAIL}"
 }
 
 ############################################
@@ -2791,9 +2501,6 @@ gen_htpasswd() {
     ADMIN_TOOL_PWD=$(gen_pass)
     if [ ! -d "${USR_DIR}/nginx/auth" ]; then
         mkdir -p "${USR_DIR}"/nginx/auth
-    fi
-    if [ ! -f "/usr/bin/htpasswd" ]; then
-        apt install apache2-utils -y
     fi
     htpasswd -b -c ${USR_DIR}/nginx/auth/.htpasswd admin "${ADMIN_TOOL_PWD}"
     chown -R nginx:nginx "${USR_DIR}"/nginx/auth
@@ -2814,7 +2521,7 @@ opcache_dashboard() {
 # Rclone
 ############################################
 install_rclone() {
-    curl https://rclone.org/install.sh | sudo bash
+    curl -s https://rclone.org/install.sh | bash
 }
 
 install_wp_cli_packages() {
@@ -2825,8 +2532,8 @@ install_wp_cli_packages() {
 
     systemctl restart php"${PHP_VERSION}"-fpm
 
-    wp package install iandunn/wp-cli-rename-db-prefix --allow-root
-    wp package install trepmal/wp-revisions-cli --allow-root
+    wp package install iandunn/wp-cli-rename-db-prefix --allow-root || true
+    wp package install trepmal/wp-revisions-cli --allow-root || true
 
     sed -i '/memory_limit/d' "$PHP1_INI_PATH"/00-hostvn-custom.ini
     sed -i '/memory_limit/d' "$PHP1_CLI_PATH"/00-hostvn-custom.ini
@@ -2845,480 +2552,48 @@ install_wp_cli_packages() {
 # Fail2ban
 ############################################
 install_fail2ban() {
-    apt-get install fail2ban -y
-    cp /etc/fail2ban/jail.{conf,local}
-    if [ -f "/etc/fail2ban/jail.d/defaults-debian.conf" ]; then
-        rm -rf /etc/fail2ban/jail.d/defaults-debian.conf
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        pkg_install fail2ban || return 1
+        pkg_install_optional fail2ban-firewalld fail2ban-systemd
+    else
+        pkg_install fail2ban || return 1
+        pkg_install_optional python3-systemd
     fi
 
-    ssh_port="ssh"
-    if [[ "$prompt_ssh" =~ ^([yY]) ]]; then
-        ssh_port=8282
-    fi
-
-    mv /etc/fail2ban/jail.local /etc/fail2ban/jail.local."$(date +%Y-%m-%d)"
-
-    cat > "/etc/fail2ban/jail.local" << EOjail_local
-[INCLUDES]
-before = paths-debian.conf
-
+    # The jail.conf shipped by the distribution is kept, only overrides are written.
+    cat >"/etc/fail2ban/jail.d/defaults.conf" <<END
 [DEFAULT]
-ignorecommand =
-bantime  = 48h
-findtime  = 10m
-maxretry = 5
-backend = auto
-usedns = warn
-logencoding = auto
-enabled = false
-filter = %(__name__)s[mode=%(mode)s]
-destemail  = ${ADMIN_EMAIL}
-sender     = ${ADMIN_EMAIL}
-mta = sendmail
-protocol = tcp
-chain = <known/chain>
-port = 0:65535
-fail2ban_agent = Fail2Ban/%(fail2ban_version)s
-banaction = iptables-multiport
-banaction_allports = iptables-allports
-action_ = %(banaction)s[name=%(__name__)s, bantime="%(bantime)s", port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
-action_mw = %(banaction)s[name=%(__name__)s, bantime="%(bantime)s", port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
-            %(mta)s-whois[name=%(__name__)s, sender="%(sender)s", dest="%(destemail)s", protocol="%(protocol)s", chain="%(chain)s"]
-action_mwl = %(banaction)s[name=%(__name__)s, bantime="%(bantime)s", port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
-             %(mta)s-whois-lines[name=%(__name__)s, sender="%(sender)s", dest="%(destemail)s", logpath=%(logpath)s, chain="%(chain)s"]
-action_xarf = %(banaction)s[name=%(__name__)s, bantime="%(bantime)s", port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
-             xarf-login-attack[service=%(__name__)s, sender="%(sender)s", logpath=%(logpath)s, port="%(port)s"]
-action_cf_mwl = cloudflare[cfuser="%(cfemail)s", cftoken="%(cfapikey)s"]
-                %(mta)s-whois-lines[name=%(__name__)s, sender="%(sender)s", dest="%(destemail)s", logpath=%(logpath)s, chain="%(chain)s"]
-action_blocklist_de  = blocklist_de[email="%(sender)s", service=%(filter)s, apikey="%(blocklist_de_apikey)s", agent="%(fail2ban_agent)s"]
-action_badips = badips.py[category="%(__name__)s", banaction="%(banaction)s", agent="%(fail2ban_agent)s"]
-action_badips_report = badips[category="%(__name__)s", agent="%(fail2ban_agent)s"]
-action_abuseipdb = abuseipdb
-action = %(action_)s
-
-[sshd]
-port    = ${ssh_port}
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
-
-[dropbear]
-port     = ssh
-logpath  = %(dropbear_log)s
-backend  = %(dropbear_backend)s
-
-[selinux-ssh]
-port     = ssh
-logpath  = %(auditd_log)s
-
-[apache-auth]
-port     = http,https
-logpath  = %(apache_error_log)s
-
-[apache-badbots]
-port     = http,https
-logpath  = %(apache_access_log)s
-bantime  = 48h
-maxretry = 1
-
-[apache-noscript]
-port     = http,https
-logpath  = %(apache_error_log)s
-
-[apache-overflows]
-port     = http,https
-logpath  = %(apache_error_log)s
-maxretry = 2
-
-[apache-nohome]
-port     = http,https
-logpath  = %(apache_error_log)s
-maxretry = 2
-
-[apache-botsearch]
-port     = http,https
-logpath  = %(apache_error_log)s
-maxretry = 2
-
-[apache-fakegooglebot]
-port     = http,https
-logpath  = %(apache_access_log)s
-maxretry = 1
-ignorecommand = %(ignorecommands_dir)s/apache-fakegooglebot <ip>
-
-[apache-modsecurity]
-port     = http,https
-logpath  = %(apache_error_log)s
-maxretry = 2
-
-[apache-shellshock]
-port    = http,https
-logpath = %(apache_error_log)s
-maxretry = 1
-
-[openhab-auth]
-filter = openhab
-action = iptables-allports[name=NoAuthFailures]
-logpath = /opt/openhab/logs/request.log
-
-[nginx-http-auth]
-port    = ${RANDOM_ADMIN_PORT}
-logpath = %(nginx_error_log)s
-
-[nginx-limit-req]
-port    = http,https
-logpath = %(nginx_error_log)s
-
-[nginx-botsearch]
-port     = http,https
-logpath  = %(nginx_error_log)s
-maxretry = 2
-
-[php-url-fopen]
-port    = http,https
-logpath = %(nginx_access_log)s
-          %(apache_access_log)s
-
-[suhosin]
-port    = http,https
-logpath = %(suhosin_log)s
-
-[lighttpd-auth]
-port    = http,https
-logpath = %(lighttpd_error_log)s
-
-[roundcube-auth]
-port     = http,https
-logpath  = %(roundcube_errors_log)s
-
-[openwebmail]
-port     = http,https
-logpath  = /var/log/openwebmail.log
-
-[horde]
-port     = http,https
-logpath  = /var/log/horde/horde.log
-
-[groupoffice]
-port     = http,https
-logpath  = /home/groupoffice/log/info.log
-
-[sogo-auth]
-port     = http,https
-logpath  = /var/log/sogo/sogo.log
-
-[tine20]
-logpath  = /var/log/tine20/tine20.log
-port     = http,https
-
-[drupal-auth]
-port     = http,https
-logpath  = %(syslog_daemon)s
-backend  = %(syslog_backend)s
-
-[guacamole]
-port     = http,https
-logpath  = /var/log/tomcat*/catalina.out
-
-[monit]
-#Ban clients brute-forcing the monit gui login
-port = 2812
-logpath  = /var/log/monit
-
-[webmin-auth]
-port    = 10000
-logpath = %(syslog_authpriv)s
-backend = %(syslog_backend)s
-
-[froxlor-auth]
-port    = http,https
-logpath  = %(syslog_authpriv)s
-backend  = %(syslog_backend)s
-
-[squid]
-port     =  80,443,3128,8080
-logpath = /var/log/squid/access.log
-
-[3proxy]
-port    = 3128
-logpath = /var/log/3proxy.log
-
-[proftpd]
-port     = ftp,ftp-data,ftps,ftps-data
-logpath  = %(proftpd_log)s
-backend  = %(proftpd_backend)s
-
-[pure-ftpd]
-port     = ftp,ftp-data,ftps,ftps-data
-logpath  = %(pureftpd_log)s
-backend  = %(pureftpd_backend)s
-
-[gssftpd]
-port     = ftp,ftp-data,ftps,ftps-data
-logpath  = %(syslog_daemon)s
-backend  = %(syslog_backend)s
-
-[wuftpd]
-port     = ftp,ftp-data,ftps,ftps-data
-logpath  = %(wuftpd_log)s
-backend  = %(wuftpd_backend)s
-
-[vsftpd]
-port     = ftp,ftp-data,ftps,ftps-data
-logpath  = %(vsftpd_log)s
-
-[assp]
-port     = smtp,465,submission
-logpath  = /root/path/to/assp/logs/maillog.txt
-
-[courier-smtp]
-port     = smtp,465,submission
-logpath  = %(syslog_mail)s
-backend  = %(syslog_backend)s
-
-[postfix]
-mode    = more
-port    = smtp,465,submission
-logpath = %(postfix_log)s
-backend = %(postfix_backend)s
-
-[postfix-rbl]
-filter   = postfix[mode=rbl]
-port     = smtp,465,submission
-logpath  = %(postfix_log)s
-backend  = %(postfix_backend)s
-maxretry = 1
-
-[sendmail-auth]
-port    = submission,465,smtp
-logpath = %(syslog_mail)s
-backend = %(syslog_backend)s
-
-[sendmail-reject]
-port     = smtp,465,submission
-logpath  = %(syslog_mail)s
-backend  = %(syslog_backend)s
-
-[qmail-rbl]
-filter  = qmail
-port    = smtp,465,submission
-logpath = /service/qmail/log/main/current
-
-[dovecot]
-port    = pop3,pop3s,imap,imaps,submission,465,sieve
-logpath = %(dovecot_log)s
-backend = %(dovecot_backend)s
-
-[sieve]
-port   = smtp,465,submission
-logpath = %(dovecot_log)s
-backend = %(dovecot_backend)s
-
-[solid-pop3d]
-port    = pop3,pop3s
-logpath = %(solidpop3d_log)s
-
-[exim]
-port   = smtp,465,submission
-logpath = %(exim_main_log)s
-
-[exim-spam]
-port   = smtp,465,submission
-logpath = %(exim_main_log)s
-
-[kerio]
-port    = imap,smtp,imaps,465
-logpath = /opt/kerio/mailserver/store/logs/security.log
-
-[courier-auth]
-port     = smtp,465,submission,imap,imaps,pop3,pop3s
-logpath  = %(syslog_mail)s
-backend  = %(syslog_backend)s
-
-[postfix-sasl]
-filter   = postfix[mode=auth]
-port     = smtp,465,submission,imap,imaps,pop3,pop3s
-logpath  = %(postfix_log)s
-backend  = %(postfix_backend)s
-
-[perdition]
-port   = imap,imaps,pop3,pop3s
-logpath = %(syslog_mail)s
-backend = %(syslog_backend)s
-
-[squirrelmail]
-port = smtp,465,submission,imap,imap2,imaps,pop3,pop3s,http,https,socks
-logpath = /var/lib/squirrelmail/prefs/squirrelmail_access_log
-
-[cyrus-imap]
-port   = imap,imaps
-logpath = %(syslog_mail)s
-backend = %(syslog_backend)s
-
-[uwimap-auth]
-port   = imap,imaps
-logpath = %(syslog_mail)s
-backend = %(syslog_backend)s
-
-[named-refused]
-port     = domain,953
-logpath  = /var/log/named/security.log
-
-[nsd]
-port     = 53
-action   = %(banaction)s[name=%(__name__)s-tcp, port="%(port)s", protocol="tcp", chain="%(chain)s", actname=%(banaction)s-tcp]
-           %(banaction)s[name=%(__name__)s-udp, port="%(port)s", protocol="udp", chain="%(chain)s", actname=%(banaction)s-udp]
-logpath = /var/log/nsd.log
-
-[asterisk]
-port     = 5060,5061
-action   = %(banaction)s[name=%(__name__)s-tcp, port="%(port)s", protocol="tcp", chain="%(chain)s", actname=%(banaction)s-tcp]
-           %(banaction)s[name=%(__name__)s-udp, port="%(port)s", protocol="udp", chain="%(chain)s", actname=%(banaction)s-udp]
-           %(mta)s-whois[name=%(__name__)s, dest="%(destemail)s"]
-logpath  = /var/log/asterisk/messages
-maxretry = 10
-
-[freeswitch]
-port     = 5060,5061
-action   = %(banaction)s[name=%(__name__)s-tcp, port="%(port)s", protocol="tcp", chain="%(chain)s", actname=%(banaction)s-tcp]
-           %(banaction)s[name=%(__name__)s-udp, port="%(port)s", protocol="udp", chain="%(chain)s", actname=%(banaction)s-udp]
-           %(mta)s-whois[name=%(__name__)s, dest="%(destemail)s"]
-logpath  = /var/log/freeswitch.log
-maxretry = 10
-
-[mysqld-auth]
-port     = 3306
-logpath  = %(mysql_log)s
-backend  = %(mysql_backend)s
-
-[mongodb-auth]
-port     = 27017
-logpath  = /var/log/mongodb/mongodb.log
-
-[recidive]
-logpath  = /var/log/fail2ban.log
-banaction = %(banaction_allports)s
-bantime  = 1w
-findtime = 1d
-
-[pam-generic]
-banaction = %(banaction_allports)s
-logpath  = %(syslog_authpriv)s
-backend  = %(syslog_backend)s
-
-[xinetd-fail]
-banaction = iptables-multiport-log
-logpath   = %(syslog_daemon)s
-backend   = %(syslog_backend)s
-maxretry  = 2
-
-[stunnel]
-logpath = /var/log/stunnel4/stunnel.log
-
-[ejabberd-auth]
-port    = 5222
-logpath = /var/log/ejabberd/ejabberd.log
-
-[counter-strike]
-logpath = /opt/cstrike/logs/L[0-9]*.log
-# Firewall: http://www.cstrike-planet.com/faq/6
-tcpport = 27030,27031,27032,27033,27034,27035,27036,27037,27038,27039
-udpport = 1200,27000,27001,27002,27003,27004,27005,27006,27007,27008,27009,27010,27011,27012,27013,27014,27015
-action  = %(banaction)s[name=%(__name__)s-tcp, port="%(tcpport)s", protocol="tcp", chain="%(chain)s", actname=%(banaction)s-tcp]
-           %(banaction)s[name=%(__name__)s-udp, port="%(udpport)s", protocol="udp", chain="%(chain)s", actname=%(banaction)s-udp]
-
-[nagios]
-logpath  = %(syslog_daemon)s     ; nrpe.cfg may define a different log_facility
-backend  = %(syslog_backend)s
-maxretry = 1
-
-[oracleims]
-logpath = /opt/sun/comms/messaging64/log/mail.log_current
-banaction = %(banaction_allports)s
-
-[directadmin]
-logpath = /var/log/directadmin/login.log
-port = 2222
-
-[portsentry]
-logpath  = /var/lib/portsentry/portsentry.history
-maxretry = 1
-
-[pass2allow-ftp]
-port         = ftp,ftp-data,ftps,ftps-data
-knocking_url = /knocking/
-filter       = apache-pass[knocking_url="%(knocking_url)s"]
-logpath      = %(apache_access_log)s
-blocktype    = RETURN
-returntype   = DROP
-action       = %(action_)s[blocktype=%(blocktype)s, returntype=%(returntype)s]
-bantime      = 1h
-maxretry     = 1
-findtime     = 1
-
-[murmur]
-# AKA mumble-server
-port     = 64738
-action   = %(banaction)s[name=%(__name__)s-tcp, port="%(port)s", protocol=tcp, chain="%(chain)s", actname=%(banaction)s-tcp]
-           %(banaction)s[name=%(__name__)s-udp, port="%(port)s", protocol=udp, chain="%(chain)s", actname=%(banaction)s-udp]
-logpath  = /var/log/mumble-server/mumble-server.log
-
-[screensharingd]
-# For Mac OS Screen Sharing Service (VNC)
-logpath  = /var/log/system.log
-logencoding = utf-8
-
-[haproxy-http-auth]
-logpath  = /var/log/haproxy.log
-
-[slapd]
-port    = ldap,ldaps
-logpath = /var/log/slapd.log
-
-[domino-smtp]
-port    = smtp,ssmtp
-logpath = /home/domino01/data/IBM_TECHNICAL_SUPPORT/console.log
-
-[phpmyadmin-syslog]
-port    = http,https
-logpath = %(syslog_authpriv)s
-backend = %(syslog_backend)s
-
-[zoneminder]
-port    = http,https
-logpath = %(apache_error_log)s
-EOjail_local
-
-    cat >>"/etc/fail2ban/jail.d/defaults.conf" <<END
-[DEFAULT]
-ignoreip   = 127.0.0.1
-findtime   = 120s
+ignoreip   = 127.0.0.1/8 ::1
+findtime   = 600
+bantime    = 86400
+maxretry   = 5
 destemail  = ${ADMIN_EMAIL}
 sender     = ${ADMIN_EMAIL}
 sendername = Fail2ban
-mta        = sendmail
-action     = %(action_mwl)s
 END
-    cat >>"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
+    cat >"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
 [nginx-http-auth]
 enabled  = true
 filter   = nginx-http-auth
 port     = ${RANDOM_ADMIN_PORT}
-logpath  = /var/log/nginx/error.log;
+logpath  = /var/log/nginx/error.log
+backend  = auto
 maxretry = 5
 bantime  = 86400
 END
-    cat >>"/etc/fail2ban/jail.d/sshd.local" <<END
+    cat >"/etc/fail2ban/jail.d/sshd.local" <<END
 [sshd]
 enabled  = true
 filter   = sshd
-port     = ${ssh_port}
-logpath  = %(sshd_log)s
+port     = ${SSH_PORT}
+backend  = systemd
 maxretry = 5
 bantime  = 86400
 END
 
-    systemctl start fail2ban
+    touch /var/log/nginx/error.log
     systemctl enable fail2ban
+    systemctl restart fail2ban
 }
 
 ############################################
@@ -3331,46 +2606,50 @@ setup_sftp(){
     check_sshd_config=$(grep -w "filetransfer" "/etc/ssh/sshd_config")
     if [ -z "${check_sshd_config}" ]; then
         cat >> "/etc/ssh/sshd_config" << END
+
+# filetransfer: SFTP only users, locked inside their home folder
 Match Group filetransfer
-    ChrootDirectory %h                    # Prevent user access to anything beyond their home folder
-    X11Forwarding no                      # Disable X11 forwarding
-    AllowTcpForwarding no                 # Disable tunneling
-    AllowAgentForwarding no               # Disable port forwarding
-    PermitTunnel no                       # Disable network tunneling
-    ForceCommand internal-sftp            # Force the connection to use the built-in SFTP server
+    ChrootDirectory %h
+    X11Forwarding no
+    AllowTcpForwarding no
+    AllowAgentForwarding no
+    PermitTunnel no
+    ForceCommand internal-sftp
     PasswordAuthentication yes
 END
     fi
 
-    check_group=$(grep filetransfer /etc/group)
-    if [ -z "${check_group}" ]; then
-        addgroup filetransfer
+    os_add_group filetransfer
+
+    if sshd -t; then
+        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
     fi
 }
 
 # Create menu
 ############################################
 add_menu() {
-    cd_dir "${BASH_DIR}"
-    rm -rf menu hostvn.conf ipaddress menu.tar.gz /usr/bin/hostvn
-    wget "${EXT_LINK}"/ubuntu/menu.tar.gz  > /dev/null
-    tar -xvf menu.tar.gz && rm -rf menu.tar.gz  > /dev/null
+    rm -rf "${BASH_DIR}"/menu /usr/bin/hostvn
+    cp -r "${LEMP_SRC_DIR}"/menu "${BASH_DIR}"/menu
+    cp "${LEMP_SRC_DIR}"/version "${BASH_DIR}"/version
+    find "${BASH_DIR}"/menu -name ".DS_Store" -delete
+    find "${BASH_DIR}"/menu -type f ! -name "*.conf" ! -name "*.html" -exec sed -i 's/\r$//' {} +
     mkdir -p "${BASH_DIR}"/users
     mkdir -p /var/log/hostvn
     mkdir -p /var/hostvn/wpcron
+    cd_dir "${BASH_DIR}"
     chmod 711 menu users wpcron
-    chmod +x ./menu/* ./menu/*/* ./menu/*/*/* ./menu/*/*/*/* > /dev/null
-    dos2unix ./menu/* > /dev/null
-    dos2unix ./menu/*/* > /dev/null
-    dos2unix ./menu/*/*/* > /dev/null
+    find "${BASH_DIR}"/menu -type f -exec chmod +x {} +
 
-    mv "${BASH_DIR}"/menu/hostvn /usr/bin/hostvn && chmod +x /usr/bin/hostvn
+    cp "${BASH_DIR}"/menu/hostvn /usr/bin/hostvn && chmod +x /usr/bin/hostvn
+    cd_dir "${DIR}"
 }
 
 ############################################
 # Write Info
 ############################################
 write_info() {
+    rm -f "${FILE_INFO}"
     touch "${FILE_INFO}"
     {
         echo "script_version=${SCRIPTS_VERSION}"
@@ -3385,56 +2664,40 @@ write_info() {
         echo "php2_version=${PHP_VERSION_2}"
         echo "webserver=nginx"
         echo "lang=vi"
+        echo "install_mode=${INSTALL_MODE}"
     } >>"${FILE_INFO}"
 
     touch /etc/hostvn.lock
     chmod 600 "${FILE_INFO}" /etc/hostvn.lock
 
-    if [[ ! -f "/var/hostvn/ipaddress" ]]; then
-        cat >>"/var/hostvn/ipaddress" <<END
+    cat >"/var/hostvn/ipaddress" <<END
 #!/bin/bash
 IPADDRESS=${IPADDRESS}
 END
-    fi
 }
 
 open_port() {
-    systemctl start ufw
-    systemctl enable ufw
-    ufw enable << EOF
-y
-EOF
-
-    ufw allow ssh
-    ufw allow http
-    ufw allow https
-    ufw allow 20/tcp
-    ufw allow 21/tcp
-    ufw allow 25/tcp
-    ufw allow 53/tcp
-    ufw allow 110/tcp
-    ufw allow 143/tcp
-    ufw allow 993/tcp
-    ufw allow 995/tcp
-    ufw allow 9200/tcp
-    ufw allow 9300/tcp
-    ufw allow 465/tcp
-    ufw allow 587/tcp
-    ufw allow "${RANDOM_ADMIN_PORT}"/tcp
-
-    ufw allow 20/udp
-    ufw allow 21/udp
-
-    if [[ "$prompt_ssh" =~ ^([yY]) ]]; then
-        ufw allow 8282/tcp
+    if [ "${INSTALL_MODE}" == "dev" ]; then
+        # Internal server: never switch on a firewall that the admin left off,
+        # only add our ports when one is already running.
+        if ! fw_active; then
+            return 0
+        fi
+    else
+        fw_enable
     fi
 
-    systemctl restart ufw
+    fw_allow_port "${SSH_PORT}"
+    fw_allow_port 22
+    fw_allow_port 80
+    fw_allow_port 443
+    fw_allow_port "${RANDOM_ADMIN_PORT}"
+    fw_reload
 }
 
 kernel_tweak(){
-    mv /etc/sysctl.conf /etc/sysctl.conf."$(date +%Y-%m-%d)"
-    cat >> "/etc/sysctl.conf" << EOsysctl
+    modprobe tcp_bbr 2>/dev/null
+    cat > "/etc/sysctl.d/99-hostvn.conf" << EOsysctl
 ###
 ### GENERAL SYSTEM SECURITY OPTIONS ###
 ###
@@ -3680,14 +2943,32 @@ net.ipv4.tcp_fastopen = 3
 net.ipv4.route.flush = 1
 net.ipv6.route.flush = 1
 EOsysctl
-    sysctl -p
+    sysctl --system >/dev/null 2>&1
 }
+
+welcome
+check_dns_server
+os_selinux_permissive
+os_install_base || fatal "Khong cai duoc cac goi can thiet."
+create_swap
+set_timezone
 
 create_bash_dir
 set_email
 ssh_login_notify
 input_ip
-option_change_ssh_port
+
+SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
+SSH_PORT=${SSH_PORT:-22}
+prompt_ssh="n"
+if [ "${INSTALL_MODE}" != "dev" ]; then
+    option_change_ssh_port
+    if [[ ! "$prompt_ssh" =~ ^([yY]) ]]; then
+        SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
+        SSH_PORT=${SSH_PORT:-22}
+    fi
+fi
+
 select_php_ver
 select_php_multi
 
@@ -3700,18 +2981,22 @@ php_memory_calculation
 cal_ssl_cache_size
 php_parameter
 mariadb_calculation
-self_signed_ssl
 
 install_nginx
+self_signed_ssl
 install_mariadb
 install_php
 
 if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
     install_php_2
+fi
+
+if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
     php2_global_config
     hostvn_custom_ini_2
     php_2_opcache
-    systemctl enable php"${PHP_VERSION_2}"-fpm
+    systemctl enable "$(php_service "${PHP_VERSION_2}")"
+    systemctl restart "$(php_service "${PHP_VERSION_2}")"
 fi
 
 create_nginx_conf
@@ -3722,29 +3007,27 @@ default_vhost
 vhost_custom
 default_index
 default_error_page
-wp_rocket_nginx
 php_global_config
 
-systemctl enable php"${PHP_VERSION}"-fpm
+systemctl enable "$(php_service "${PHP_VERSION}")"
 
 hostvn_custom_ini
 php_opcache
+systemctl restart "$(php_service "${PHP_VERSION}")"
+wp_rocket_nginx
 config_my_cnf
 
 install_phpmyadmin
 install_composer
 install_wp_cli
 
-install_optipng
-install_jpegoptim
-install_pngquant
-
-install_acme
+if [ "${INSTALL_MODE}" != "dev" ]; then
+    install_acme
+fi
 gen_htpasswd
 opcache_dashboard
 install_rclone
 install_wp_cli_packages
-install_fail2ban
 
 if [[ "$prompt_ssh" =~ ^([yY]) ]]; then
     change_ssh_port
@@ -3754,20 +3037,33 @@ setup_sftp
 add_menu
 write_info
 open_port
-kernel_tweak
 
+if [ "${INSTALL_MODE}" != "dev" ]; then
+    install_fail2ban
+    kernel_tweak
+fi
+
+if nginx -t; then
+    systemctl restart nginx
+else
+    printf "${RED}%s${NC}\n" "Cau hinh Nginx bi loi, vui long kiem tra: nginx -t"
+fi
+
+set +x
 clear
 sleep 1
 
 printf "=========================================================================\n"
-printf "                    Cai dat thanh cong Ubuntu LEMP Stack                 \n"
+printf "              Cai dat thanh cong LEMP Stack (%s %s)\n" "${OS_ID}" "${OS_VERSION_ID}"
 printf "                 File luu thong tin: %s\n" "${FILE_INFO}"
-printf "          Neu can ho tro vui long truy cap %s\n" "${AUTHOR_CONTACT}"
 printf "==========================================================================\n"
 printf "              Luu lai thong tin duoi day de truy cap SSH va phpMyAdmin    \n"
 printf "                  ${RED}%s${NC}\n           \n" "De mo Menu su dung lenh:  hostvn"
 printf "==========================================================================\n"
+printf "Che do cai dat               : %s\n" "${INSTALL_MODE}"
+printf "IP Server                    : %s\n" "${IPADDRESS}"
 printf "SSH  Port                    : %s\n" "${SSH_PORT}"
+printf "PHP                          : %s %s\n" "${PHP_VERSION}" "${PHP_VERSION_2}"
 printf "phpMyAdmin                   : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/phpmyadmin"
 printf "Link Opcache Dashboard       : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/opcache"
 echo "User phpMyAdmin va Admin Tool: admin                                   "
@@ -3775,5 +3071,11 @@ printf "Password Admin tool          : %s\n" "${ADMIN_TOOL_PWD}"
 printf "Password phpMyAdmin          : %s\n" "${sql_admin_pass}"
 printf "=========================================================================\n"
 
-sleep 3
-shutdown -r now
+if [ "${INSTALL_MODE}" == "dev" ]; then
+    printf "Che do DEV: go lenh 'hostvn' -> Quan ly Domain -> Them domain -> chon IP:PORT\n"
+    printf "de tao website truy cap bang http://%s:<port>\n" "${IPADDRESS}"
+else
+    printf "Server se khoi dong lai sau 5 giay de ap dung cau hinh...\n"
+    sleep 5
+    shutdown -r now
+fi
