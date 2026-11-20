@@ -12,10 +12,9 @@
 ######################################################################
 
 # Usage:
-#   ./install            Production server (public VPS)
-#   ./install --dev      Internal dev server: sites are served on IP:PORT,
-#                        no SSH port change, no kernel tweak, no reboot.
-#   ./install --force    Skip the "service already installed" check.
+#   ./install
+# Every option (production / dev server, PHP, web server, CrowdSec, Telegram...)
+# is chosen in the interactive wizard.
 
 REPO_SLUG="${REPO_SLUG:-hao159/linux-lemp-stack}"
 REPO_BRANCH="${REPO_BRANCH:-master}"
@@ -23,19 +22,6 @@ SRC_DIR="/opt/lemp-stack-src"
 
 RED='\033[0;31m'
 NC='\033[0m'
-
-INSTALL_MODE="prod"
-FORCE="no"
-for arg in "$@"; do
-    case "${arg}" in
-    --dev) INSTALL_MODE="dev" ;;
-    --force) FORCE="yes" ;;
-    -h | --help)
-        sed -n '14,18p' "$0" | sed 's/^# \{0,1\}//'
-        exit 0
-        ;;
-    esac
-done
 
 die() {
     printf "${RED}%s${NC}\n" "$1"
@@ -46,21 +32,45 @@ die() {
 [[ "$(id -u)" == "0" ]] || die "Ban can dang nhap SSH voi user root."
 [ -f /etc/os-release ] || die "Khong xac dinh duoc he dieu hanh."
 command -v systemctl >/dev/null 2>&1 || die "Script yeu cau systemd."
+[ -t 0 ] || die "Trinh cai dat can terminal de hoi lua chon. Hay chay: ./install"
 
 RAM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 [[ ${RAM_TOTAL} -ge 400000 ]] || die "Canh bao: Dung luong RAM qua thap de cai Script. (It nhat 512MB)"
 
-[ -f /etc/hostvn.lock ] && [ "${FORCE}" != "yes" ] && die "Script da duoc cai dat tren may nay. Go lenh: hostvn"
-
-if [ "${FORCE}" != "yes" ]; then
-    for svc in apache2 httpd mysqld mysql mariadb nginx; do
-        if systemctl is-active --quiet "${svc}"; then
-            die "Phat hien dich vu ${svc} dang chay. Script chi cai tren may chua cai web server/database (dung --force de bo qua)."
-        fi
-    done
-    if [ -d /var/lib/mysql ] && [ -n "$(ls -A /var/lib/mysql 2>/dev/null)" ]; then
-        die "Thu muc /var/lib/mysql da co du lieu. Hay sao luu va xoa truoc khi cai (hoac dung --force)."
+# The script expects a clean server. When it is not, explain what was found and let the
+# administrator decide instead of requiring a command line option.
+WARNINGS=()
+[ -f /etc/hostvn.lock ] && WARNINGS+=("Script da duoc cai dat tren may nay (menu: hostvn).")
+for svc in apache2 httpd mysqld mysql mariadb nginx; do
+    if systemctl is-active --quiet "${svc}"; then
+        WARNINGS+=("Dich vu ${svc} dang chay.")
     fi
+done
+if [ -d /var/lib/mysql ] && [ -n "$(ls -A /var/lib/mysql 2>/dev/null)" ]; then
+    WARNINGS+=("Thu muc /var/lib/mysql da co du lieu (hay sao luu truoc).")
+fi
+
+if [ ${#WARNINGS[@]} -gt 0 ]; then
+    clear
+    printf "${RED}%s${NC}\n" "Server nay khong phai may moi:"
+    for w in "${WARNINGS[@]}"; do
+        printf "${RED}  - %s${NC}\n" "${w}"
+    done
+    echo ""
+    echo "Script duoc thiet ke cho may chua cai web server/database."
+    echo "Cai de len co the ghi de cau hinh va lam mat du lieu hien co."
+    echo ""
+    echo "  1. Huy cai dat  (mac dinh)"
+    echo "  2. Van tiep tuc cai dat"
+    echo ""
+    while true; do
+        read -r -p "Nhap vao lua chon cua ban [1-2] (Enter = 1): " answer
+        case "${answer}" in
+        "" | 1) die "Da huy theo lua chon cua ban." ;;
+        2) break ;;
+        *) echo "Lua chon khong chinh xac, vui long nhap lai." ;;
+        esac
+    done
 fi
 
 # Tools needed to fetch the source
@@ -96,7 +106,7 @@ if ! os_supported; then
 fi
 
 export LEMP_SRC_DIR="${SRC_DIR}"
-export INSTALL_MODE REPO_SLUG REPO_BRANCH
+export REPO_SLUG REPO_BRANCH
 
 cd "${SRC_DIR}" || exit 1
 bash "${SRC_DIR}/hostvn"

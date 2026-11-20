@@ -3,7 +3,8 @@ v1.2.0
 - Added: menu 14 "Cap nhat & canh bao": check and update Nginx, PHP, MariaDB, CrowdSec, OS packages, Scripts
 - Added: Nginx update finds the newest release of its branch on nginx.org, the old binary is restored when it fails
 - Added: daily check for updates, shown in the hostvn menu and sent to Telegram
-- Added: Apache (event MPM + PHP-FPM) can be chosen instead of Nginx at install: WEBSERVER=apache ./install
+- Changed: the installer is a step-by-step wizard (mode, email, IP, SSH port, PHP, web server, swap, CrowdSec, Telegram) with a summary to confirm before anything is installed; the --dev / --force options and WEBSERVER= are replaced by wizard questions
+- Added: Apache (event MPM + PHP-FPM) can be chosen instead of Nginx in the installer
 - Added: Apache behind Nginx for the websites that need .htaccess (menu LEMP -> Apache phia sau Nginx)
 - Added: Apache mode: change domain, clone, redirect domain, SSL for alias domains, protected folders, WordPress protections (.htaccess), move VPS, CrowdSec reading the Apache logs
 - Added: menu PHP -> install extensions (mongodb, redis, pgsql, intl, imagick, gd, zip ...) from Ondrej/Sury/Remi packages

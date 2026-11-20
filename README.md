@@ -34,36 +34,48 @@ Phiên bản các phần mềm nằm trong file [`version`](version) — chỉ c
 
 ## 3. Cài đặt
 
-### 3.1. VPS public (production)
+### 3.1. Chạy trình cài đặt
 
 ```bash
 curl -sO https://raw.githubusercontent.com/hao159/linux-lemp-stack/master/install && chmod +x install && ./install
 ```
 
-### 3.2. Dev server nội bộ (truy cập bằng IP:PORT)
+Hoặc cài từ bản clone:
 
 ```bash
-curl -sO https://raw.githubusercontent.com/hao159/linux-lemp-stack/master/install && chmod +x install && ./install --dev
+git clone https://github.com/hao159/linux-lemp-stack.git && cd linux-lemp-stack && bash install
 ```
 
-Khác biệt của chế độ `--dev`:
+Không cần tham số dòng lệnh: trình cài đặt là một wizard hỏi lần lượt từng bước, mỗi bước có lựa chọn mặc định (nhấn Enter để chọn):
+
+1. Chế độ cài đặt: **Production** (VPS public) hoặc **Dev server nội bộ** (IP:PORT) — xem [mục 3.2](#32-chế-độ-dev-server-nội-bộ-truy-cập-bằng-ipport).
+2. Email quản trị.
+3. Địa chỉ IP của server (tự dò, Enter để dùng).
+4. Port SSH (chỉ ở chế độ Production).
+5. Phiên bản PHP, có cài thêm phiên bản PHP thứ hai không.
+6. Web server: Nginx hoặc Apache — xem [mục 3.6](#36-chọn-web-server-nginx-hoặc-apache).
+7. Swap (chỉ hỏi khi VPS chưa có swap).
+8. CrowdSec & AppSec — xem [mục 3.3](#33-crowdsec-appsec-và-telegram).
+9. Thông báo Telegram.
+
+Cuối cùng là màn hình tóm tắt để chọn **Bắt đầu cài đặt**, **Chọn lại từ đầu** hoặc **Huỷ**. Chưa có gì được cài lên server cho tới khi bạn xác nhận; sau đó quá trình cài chạy tự động, không hỏi thêm.
+
+Nếu server không phải máy mới (đã cài script, đang chạy Nginx/Apache/MariaDB, hoặc `/var/lib/mysql` có dữ liệu), trình cài đặt liệt kê những gì phát hiện được và hỏi có tiếp tục không (mặc định là huỷ).
+
+### 3.2. Chế độ Dev server nội bộ (truy cập bằng IP:PORT)
+
+Chọn **Dev server nội bộ** ở bước 1 của wizard. Khác biệt so với Production:
 
 - Dùng IP nội bộ của máy (không dò IP public), email là tuỳ chọn.
 - Không đổi port SSH, không tinh chỉnh kernel (`sysctl`), không cài Fail2ban, không cài acme.sh, **không tự reboot**.
 - Không tự bật firewall: nếu ufw/firewalld đang tắt thì giữ nguyên; nếu đang bật thì chỉ mở thêm các port cần thiết.
 - PHP: `display_errors = On`, `opcache.revalidate_freq = 0` (sửa code thấy ngay).
 
-Hoặc cài từ bản clone:
-
-```bash
-git clone https://github.com/hao159/linux-lemp-stack.git && cd linux-lemp-stack && bash install --dev
-```
-
 Log cài đặt: `/opt/install.txt`. Thông tin đăng nhập: `/var/hostvn/.hostvn.conf`.
 
 ### 3.3. CrowdSec, AppSec và Telegram
 
-Trình cài đặt hỏi ba tuỳ chọn, trả lời `n` thì bỏ qua và bật sau trong menu `hostvn`:
+Wizard cài đặt hỏi ba tuỳ chọn, trả lời `n` thì bỏ qua và bật sau trong menu `hostvn`:
 
 | Tuỳ chọn | Tác dụng | Bật sau khi đã cài |
 | --- | --- | --- |
@@ -121,7 +133,7 @@ Danh sách có sẵn: mongodb, redis, memcached, pgsql, sqlite3, intl, imagick, 
 
 ### 3.6. Chọn web server: Nginx hoặc Apache
 
-Trình cài đặt hỏi web server, hoặc đặt sẵn bằng biến môi trường: `WEBSERVER=apache ./install`.
+Chọn ở bước **Web server** của wizard cài đặt (mặc định Nginx).
 
 | Chế độ | Khi nào dùng | Ghi chú |
 | --- | --- | --- |

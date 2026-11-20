@@ -38,8 +38,8 @@ source "${LEMP_SRC_DIR}/menu/helpers/update"
 # shellcheck source=menu/helpers/apache
 source "${LEMP_SRC_DIR}/menu/helpers/apache"
 
-# prod =public VPS, dev = internal dev server (sites on IP:PORT)
-INSTALL_MODE="${INSTALL_MODE:-prod}"
+# prod = public VPS, dev = internal dev server (sites on IP:PORT). Chosen in the wizard.
+INSTALL_MODE="prod"
 
 SCRIPTS_VERSION=$(get_version script_version)
 BASH_DIR="/var/hostvn"
@@ -48,15 +48,18 @@ FILE_INFO="${BASH_DIR}/.hostvn.conf"
 HOSTNAME=$(hostname)
 PHP2_RELEASE="no"
 
-if [ "${INSTALL_MODE}" == "dev" ]; then
-    IPADDRESS=$(get_local_ip)
-    PHP_DISPLAY_ERRORS="On"
-    OPCACHE_REVALIDATE="0"
-else
-    IPADDRESS=$(get_public_ip)
-    PHP_DISPLAY_ERRORS="Off"
-    OPCACHE_REVALIDATE="180"
-fi
+# Values that depend on the installation mode
+apply_install_mode() {
+    if [ "${INSTALL_MODE}" == "dev" ]; then
+        IPADDRESS=$(get_local_ip)
+        PHP_DISPLAY_ERRORS="On"
+        OPCACHE_REVALIDATE="0"
+    else
+        IPADDRESS=$(get_public_ip)
+        PHP_DISPLAY_ERRORS="Off"
+        OPCACHE_REVALIDATE="180"
+    fi
+}
 
 # Copyright
 AUTHOR="HOSTVN.VN"
@@ -69,15 +72,6 @@ MARIADB_VERSION=$(get_version mariadb_version)
 PHP_LIST=($(get_version php_list))
 
 # Set Lang
-OPTION_CHANGE_SSH="Ban co muon thay doi port SSH khong ? "
-ENTER_OPTION="Nhap vao lua chon cua ban: "
-SELECT_PHP="Hay lua chon phien ban PHP muon cai dat:"
-WRONG_PHP_OPTION="Lua chon cua ban khong chinh xac, vui long chon lai."
-SELECT_INST_PHP_2="Ban co muon cai dat phien ban PHP thu hai khong - Multiple PHP ?"
-ENTER_OPTION_PHP_2="Nhap vao lua chon cua ban [1-2]: "
-WRONG_PHP_SELECT_2="Ban nhap sai. Vui long nhap lai."
-INVALID_PHP2_OPTION="${RED}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}"
-SELECT_PHP_2="Lua chon phien ban PHP thu hai ban muon su dung:"
 LOGIN_NOTI1="LEMP Stack Scripts (${AUTHOR}) - ${OS_ID} ${OS_VERSION_ID}."
 LOGIN_NOTI2="Source: ${AUTHOR_CONTACT}"
 LOGIN_NOTI4="De mo menu ban go lenh sau:  hostvn"
@@ -111,11 +105,95 @@ welcome() {
     clear
     printf "========================================================\n"
     echo "        Auto Install & Optimize LEMP Stack"
-    printf "        OS: %s %s - Mode: %s\n" "${OS_ID}" "${OS_VERSION_ID}" "${INSTALL_MODE}"
+    printf "        OS: %s %s\n" "${OS_ID}" "${OS_VERSION_ID}"
     printf "========================================================\n"
     echo ""
-    echo "Chuan bi cai dat..."
-    sleep 2
+    echo "Trinh cai dat se hoi lan luot cac lua chon, sau do hien tom tat de ban xac nhan."
+    echo "Chua co gi duoc cai dat cho toi khi ban xac nhan."
+    echo ""
+    read -r -p "Nhan Enter de bat dau..." _
+}
+
+############################################
+# Wizard helpers
+############################################
+WZ_STEP=0
+
+# wz_step <title> : new screen of the wizard
+wz_step() {
+    WZ_STEP=$((WZ_STEP + 1))
+    clear
+    printf "========================================================\n"
+    printf "  Cai dat LEMP Stack - Buoc %s: %s\n" "${WZ_STEP}" "$1"
+    printf "========================================================\n"
+    echo ""
+}
+
+# wz_choose <default> <option>... : prints a numbered list, sets WZ_CHOICE (1..n)
+wz_choose() {
+    local def="$1" answer i=1 opt n
+    shift
+    n=$#
+    for opt in "$@"; do
+        if [ "${i}" == "${def}" ]; then
+            printf "  %s. %s  (mac dinh)\n" "${i}" "${opt}"
+        else
+            printf "  %s. %s\n" "${i}" "${opt}"
+        fi
+        i=$((i + 1))
+    done
+    echo ""
+    while true; do
+        read -r -p "Nhap vao lua chon cua ban [1-${n}] (Enter = ${def}): " answer
+        answer="${answer:-${def}}"
+        if [[ "${answer}" =~ ^[0-9]+$ ]] && [ "${answer}" -ge 1 ] && [ "${answer}" -le "${n}" ]; then
+            WZ_CHOICE="${answer}"
+            return 0
+        fi
+        printf "${RED}%s${NC}\n" "Lua chon khong chinh xac, vui long nhap lai."
+    done
+}
+
+# ask_yes_no <question> [y|n] : returns 0 for Yes, Enter takes the default when given
+ask_yes_no() {
+    local answer hint="(y/n)"
+    case "$2" in
+    y) hint="(Y/n)" ;;
+    n) hint="(y/N)" ;;
+    esac
+    while true; do
+        read -r -p "$1 ${hint} " answer
+        answer="${answer:-$2}"
+        case "${answer}" in
+        y | Y) return 0 ;;
+        n | N) return 1 ;;
+        *) printf "${RED}%s${NC}\n" "Lua chon khong chinh xac, vui long nhap lai." ;;
+        esac
+    done
+}
+
+# Remember the previous answer as the default when the wizard is restarted
+yn_default() {
+    [ "$1" == "y" ] && echo "y" || echo "${2:-n}"
+}
+
+wz_mode() {
+    local def=1
+    [ "${INSTALL_MODE}" == "dev" ] && def=2
+    wz_step "Che do cai dat"
+    echo "Production : VPS public, website chay bang ten mien, co SSL Let's Encrypt, Fail2ban,"
+    echo "             toi uu kernel, co the doi port SSH, tu reboot sau khi cai."
+    echo "Dev        : server noi bo, website chay bang IP:PORT, PHP hien loi, khong doi port SSH,"
+    echo "             khong toi uu kernel, khong tu bat firewall, khong tu reboot."
+    echo ""
+    wz_choose "${def}" "Production (VPS public)" "Dev server noi bo (IP:PORT)"
+    if [ "${WZ_CHOICE}" == "2" ]; then
+        INSTALL_MODE="dev"
+    else
+        INSTALL_MODE="prod"
+    fi
+    echo "Dang xac dinh dia chi IP..."
+    apply_install_mode
 }
 
 # Only touch the resolver when name resolution really does not work
@@ -126,38 +204,37 @@ check_dns_server() {
     fi
 }
 
-create_swap() {
-    swap="$(swapon --show --noheadings 2>/dev/null)"
-    [ -n "${swap}" ] && return 0
+# Wizard: SWAP_SIZE in GB, 0 = no swap
+wz_swap() {
+    local size def="${SWAP_SIZE:-2}"
+    SWAP_SIZE=0
+    [ -n "$(swapon --show --noheadings 2>/dev/null)" ] && return 0
 
-    clear
-    while true; do
-        read -r -p "Ban co muon tao swap hay khong ? (y/n) " confirm_swap
-        echo
-        if [[ "${confirm_swap}" =~ ^([yYnN])$ ]]; then
-            break
-        fi
-        printf "${RED}%s${NC}\n" "Lua chon cua ban khong chinh xac. Vui long nhap lai."
-    done
-
-    if [[ "${confirm_swap}" =~ ^([yY])$ ]]; then
+    wz_step "Swap"
+    echo "VPS chua co swap. Swap giup tranh loi het RAM khi build Nginx / chay MariaDB."
+    echo ""
+    [ "${def}" == "0" ] && def=2
+    if ask_yes_no "Ban co muon tao swap khong ?" "y"; then
         while true; do
-            echo "Nhap vao dung luong swap muon tao. (VD: 1G nhap so 1, 2G nhap so 2)"
-            read -r -p "Nhap vao dung luong swap muon tao (Nhap 0 de huy tao swap): " swap_size
-            if [[ ${swap_size} =~ ^[0-9]+$ ]]; then
+            read -r -p "Dung luong swap (GB) (Enter = ${def}): " size
+            size="${size:-${def}}"
+            if [[ "${size}" =~ ^[0-9]+$ ]] && [ "${size}" -ge 1 ] && [ "${size}" -le 64 ]; then
+                SWAP_SIZE="${size}"
                 break
             fi
-            printf "${RED}%s${NC}\n" "Gia tri ban nhap khong dung. Vui long nhap lai."
+            printf "${RED}%s${NC}\n" "Gia tri ban nhap khong dung (1-64). Vui long nhap lai."
         done
-
-        if [ "${swap_size}" != 0 ]; then
-            fallocate -l "${swap_size}"G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$((swap_size * 1024))
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-            echo '/swapfile none swap sw 0 0' >>/etc/fstab
-        fi
     fi
+}
+
+create_swap() {
+    [ "${SWAP_SIZE:-0}" -gt 0 ] 2>/dev/null || return 0
+    [ -n "$(swapon --show --noheadings 2>/dev/null)" ] && return 0
+    fallocate -l "${SWAP_SIZE}"G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$((SWAP_SIZE * 1024))
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >>/etc/fstab
 }
 
 set_timezone() {
@@ -210,24 +287,33 @@ create_bash_dir() {
 
 # Admin Email
 set_email() {
-    clear
+    local email prev="${ADMIN_EMAIL}" hint
+    [ "${prev}" == "admin@localhost.localdomain" ] && [ "${INSTALL_MODE}" != "dev" ] && prev=""
+    wz_step "Email quan tri"
+    echo "Email dung cho Let's Encrypt va thong tin quan tri."
+    echo ""
     while true; do
-        if [ "${INSTALL_MODE}" == "dev" ]; then
-            read -r -p "Nhap vao email cua ban (Enter de bo qua): " ADMIN_EMAIL
-            if [ -z "${ADMIN_EMAIL}" ]; then
+        if [ -n "${prev}" ]; then
+            hint="Enter = ${prev}"
+        elif [ "${INSTALL_MODE}" == "dev" ]; then
+            hint="Enter de bo qua"
+        else
+            hint=""
+        fi
+        read -r -p "Nhap vao email cua ban${hint:+ (${hint})}: " email
+        if [ -z "${email}" ]; then
+            if [ -n "${prev}" ]; then
+                email="${prev}"
+            elif [ "${INSTALL_MODE}" == "dev" ]; then
                 ADMIN_EMAIL="admin@localhost.localdomain"
                 break
             fi
-        else
-            read -r -p "Nhap vao email cua ban: " ADMIN_EMAIL
         fi
-        echo
-        if [[ "${ADMIN_EMAIL}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-            echo "Email cua ban la: ${ADMIN_EMAIL}."
+        if [[ "${email}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+            ADMIN_EMAIL="${email}"
             break
-        else
-            echo "Email ban nhap khong chinh xac vui long nhap lai."
         fi
+        printf "${RED}%s${NC}\n" "Email ban nhap khong chinh xac, vui long nhap lai."
     done
 }
 
@@ -246,6 +332,7 @@ ssh_login_notify() {
 # Option Install
 ############################################
 input_ip() {
+    wz_step "Dia chi IP"
     if [ "${INSTALL_MODE}" == "dev" ]; then
         echo "Che do DEV: website se truy cap bang IP:PORT trong mang noi bo."
         echo "IP noi bo phat hien duoc: ${IPADDRESS}"
@@ -266,88 +353,67 @@ input_ip() {
 }
 
 option_change_ssh_port() {
-    clear
-    printf "%s\n" "${OPTION_CHANGE_SSH}"
-    PS3="${ENTER_OPTION}"
-    options=("Yes" "No")
-    select opt in "${options[@]}"; do
-        case $opt in
-        "Yes")
-            prompt_ssh="y"
-            SSH_PORT="8282"
-            sleep 1
-            printf "${RED}%s${NC}\n" "Port SSH moi là: 8282"
-            printf "${RED}%s${NC}\n" "Luu y: Voi Google Cloud, Alibaba Cloud, AWS cac ban can mo port 8282 trong tab Firewall"
-            sleep 1
-            break
-            ;;
-        "No")
-            prompt_ssh="n"
-            SSH_PORT="22"
-            break
-            ;;
-        *) printf "${RED}%s${NC}\n" "${WRONG_PHP_SELECT_2} $REPLY" ;;
-        esac
-    done
-    sleep 1
-}
+    local current
+    current=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
+    current=${current:-22}
+    prompt_ssh="n"
+    SSH_PORT="${current}"
+    # Dev servers keep their SSH port
+    [ "${INSTALL_MODE}" == "dev" ] && return 0
 
-# ask_yes_no <question> : returns 0 for Yes
-ask_yes_no() {
-    local answer
-    while true; do
-        read -r -p "$1 (y/n) " answer
-        case "${answer}" in
-        y | Y) return 0 ;;
-        n | N) return 1 ;;
-        *) printf "${RED}%s${NC}\n" "${WRONG_PHP_SELECT_2}" ;;
-        esac
-    done
-}
-
-# Nginx (default) or Apache. Preset with: WEBSERVER=apache ./install
-option_webserver() {
-    local choice ram_mb
-    case "${WEBSERVER}" in
-    nginx | apache) return 0 ;;
-    esac
-    WEBSERVER="nginx"
-    ram_mb=$((RAM_TOTAL / 1024))
-    clear
-    echo "Lua chon web server (RAM cua VPS: ${ram_mb} MB)"
-    echo "  1. Nginx  - nhe nhat, co FastCGI cache va CrowdSec AppSec (WAF). Khuyen dung."
-    echo "  2. Apache - ho tro .htaccess / mod_rewrite. Chay event MPM + PHP-FPM, khong dung mod_php."
+    wz_step "Port SSH"
+    echo "Port SSH hien tai: ${current}"
+    echo "Doi sang port 8282 giup giam bot do mat khau SSH."
+    echo "Luu y: Voi Google Cloud, Alibaba Cloud, AWS can mo port 8282 trong tab Firewall cua nha cung cap."
     echo ""
+    wz_choose "${WZ_SSH_DEF:-2}" "Doi port SSH sang 8282" "Giu nguyen port ${current}"
+    WZ_SSH_DEF="${WZ_CHOICE}"
+    if [ "${WZ_CHOICE}" == "1" ]; then
+        prompt_ssh="y"
+        SSH_PORT="8282"
+    fi
+}
+
+# Nginx (default) or Apache
+option_webserver() {
+    local ram_mb def=1
+    [ "${WEBSERVER}" == "apache" ] && def=2
+    ram_mb=$((RAM_TOTAL / 1024))
+    wz_step "Web server"
+    echo "RAM cua VPS: ${ram_mb} MB"
     echo "Chon Nginx van co the bat Apache phia sau cho rieng website can .htaccess (menu hostvn)."
     if [ "${ram_mb}" -lt 900 ]; then
         echo "VPS duoi 1GB RAM: nen chon Nginx."
     fi
     echo ""
-    while true; do
-        read -r -p "Nhap vao lua chon cua ban [1-2] (Enter = 1): " choice
-        case "${choice}" in
-        "" | 1) WEBSERVER="nginx"; break ;;
-        2) WEBSERVER="apache"; break ;;
-        *) echo "Lua chon khong chinh xac, vui long nhap lai." ;;
-        esac
-    done
+    wz_choose "${def}" \
+        "Nginx  - nhe nhat, co FastCGI cache va CrowdSec AppSec (WAF). Khuyen dung." \
+        "Apache - ho tro .htaccess / mod_rewrite (event MPM + PHP-FPM, khong dung mod_php)."
+    if [ "${WZ_CHOICE}" == "2" ]; then
+        WEBSERVER="apache"
+    else
+        WEBSERVER="nginx"
+    fi
 }
 
 # CrowdSec, AppSec and Telegram are optional, all of them can be added later from the menu.
 option_security() {
+    local prev_cs="${INSTALL_CROWDSEC}" prev_appsec="${INSTALL_APPSEC}"
     INSTALL_CROWDSEC="n"
     INSTALL_APPSEC="n"
-    clear
+    wz_step "CrowdSec & AppSec"
     echo "CrowdSec doc log web server/SSH va tu dong chan IP tan cong, IP scan (giam log ban)."
     echo "Khi cai CrowdSec, access log cua web server se duoc bat (co rotate)."
     if [ "${WEBSERVER}" != "apache" ]; then
         echo "AppSec la WAF cua CrowdSec, chan request doc hai truoc khi toi website."
     fi
+    echo "Bo qua thi van bat duoc sau trong menu hostvn."
     echo ""
-    if ask_yes_no "Ban co muon cai dat CrowdSec khong ?"; then
+    if ask_yes_no "Ban co muon cai dat CrowdSec khong ?" "$(yn_default "${prev_cs}")"; then
         INSTALL_CROWDSEC="y"
         # AppSec runs in the Nginx Lua bouncer, there is none for Apache
-        if [ "${WEBSERVER}" != "apache" ] && ask_yes_no "Ban co muon bat AppSec (WAF) khong ?"; then
+        if [ "${WEBSERVER}" != "apache" ] &&
+            ask_yes_no "Ban co muon bat AppSec (WAF) khong ?" "$(yn_default "${prev_appsec}" y)"; then
             INSTALL_APPSEC="y"
         fi
         echo ""
@@ -356,11 +422,19 @@ option_security() {
 }
 
 option_telegram() {
+    local prev="${SETUP_TELEGRAM}"
     SETUP_TELEGRAM="n"
-    clear
+    wz_step "Thong bao Telegram"
     echo "Thong bao qua Telegram: dang nhap SSH, dich vu ngung hoat dong, day o cung, IP bi CrowdSec chan."
+    echo "Bo qua thi van cau hinh duoc sau trong menu hostvn."
     echo ""
-    if ask_yes_no "Ban co muon cau hinh thong bao Telegram khong ?"; then
+    if [ "${prev}" == "y" ] && [ -n "${TELEGRAM_TOKEN}" ]; then
+        if ask_yes_no "Giu cau hinh Telegram da nhap (Chat ID ${TELEGRAM_ID}) ?" "y"; then
+            SETUP_TELEGRAM="y"
+            return 0
+        fi
+    fi
+    if ask_yes_no "Ban co muon cau hinh thong bao Telegram khong ?" "n"; then
         # The token must not end up in the installation trace
         set +x
         if tg_prompt; then
@@ -419,94 +493,143 @@ setup_telegram() {
     set -x
 }
 
-select_php_ver() {
-    clear
-    while true; do
-        printf "%s\n" "${SELECT_PHP}"
-        PS3="${ENTER_OPTION}"
-        select opt in "${PHP_LIST[@]}"; do
-            case $opt in
-            "$opt")
-                PHP_VERSION="${opt}"
-                break
-                ;;
-            esac
-        done
-        echo
-
-        if [[ " ${PHP_LIST[*]} " == *" ${PHP_VERSION} "* ]]; then
-            break
-        else
-            clear
-            printf "${RED}%s${NC}\n" "${WRONG_PHP_OPTION}"
-        fi
+# Index (1-based) of a version in a list, 1 when absent
+php_index_of() {
+    local want="$1" i=1 v
+    shift
+    for v in "$@"; do
+        [ "${v//php/}" == "${want}" ] && echo "${i}" && return 0
+        i=$((i + 1))
     done
-    sleep 1
+    echo 1
+}
 
-    PHP_VERSION=${PHP_VERSION//php/}
+select_php_ver() {
+    local labels=() others=() v def
+    for v in "${PHP_LIST[@]}"; do
+        labels+=("PHP ${v//php/}")
+    done
+    # Default: previous answer, otherwise the second entry (newest is often too fresh for plugins)
+    if [ -n "${PHP_VERSION}" ]; then
+        def=$(php_index_of "${PHP_VERSION}" "${PHP_LIST[@]}")
+    else
+        def=$(( ${#PHP_LIST[@]} > 1 ? 2 : 1 ))
+    fi
+    wz_step "Phien ban PHP"
+    echo "Phien ban PHP chinh (PHP 1) dung cho cac website moi."
+    echo ""
+    wz_choose "${def}" "${labels[@]}"
+    PHP_VERSION="${PHP_LIST[$((WZ_CHOICE - 1))]//php/}"
+
+    echo ""
+    MULTI_PHP="n"
+    if ask_yes_no "Cai them phien ban PHP thu hai (chay song song, doi theo tung website) ?" \
+        "$(yn_default "${WZ_MULTI_PHP_DEF}")"; then
+        MULTI_PHP="y"
+    fi
+    WZ_MULTI_PHP_DEF="${MULTI_PHP}"
+
+    if [ "${MULTI_PHP}" == "y" ]; then
+        labels=()
+        for v in "${PHP_LIST[@]}"; do
+            [ "${v//php/}" == "${PHP_VERSION}" ] && continue
+            others+=("${v}")
+            labels+=("PHP ${v//php/}")
+        done
+        def=1
+        [ -n "${PHP_VERSION_2}" ] && def=$(php_index_of "${PHP_VERSION_2}" "${others[@]}")
+        echo ""
+        echo "Phien ban PHP thu hai (PHP 2):"
+        wz_choose "${def}" "${labels[@]}"
+        PHP_VERSION_2="${others[$((WZ_CHOICE - 1))]//php/}"
+    else
+        PHP_VERSION_2=""
+    fi
+}
+
+php_set_paths() {
     PHP1_CONFIG_PATH="/etc/php/${PHP_VERSION}/fpm"
     PHP1_INI_PATH="${PHP1_CONFIG_PATH}/conf.d"
     PHP1_POOL_PATH="${PHP1_CONFIG_PATH}/pool.d"
     PHP1_CLI_PATH="/etc/php/${PHP_VERSION}/cli/conf.d"
+    if [ "${MULTI_PHP}" == "y" ]; then
+        PHP2_CONFIG_PATH="/etc/php/${PHP_VERSION_2}/fpm"
+        PHP2_INI_PATH="${PHP2_CONFIG_PATH}/conf.d"
+        PHP2_POOL_PATH="${PHP2_CONFIG_PATH}/pool.d"
+        PHP2_CLI_PATH="/etc/php/${PHP_VERSION_2}/cli/conf.d"
+    fi
 }
 
-select_php_multi() {
+# Last screen of the wizard: everything chosen, confirm before touching the server
+wz_summary() {
+    local ram_mb=$((RAM_TOTAL / 1024)) yn
     clear
-    printf "%s\n" "${SELECT_INST_PHP_2}"
-    PS3="${ENTER_OPTION_PHP_2}"
-    options=("Yes" "No")
-    select opt in "${options[@]}"; do
-        case $opt in
-        "Yes")
-            MULTI_PHP="y"
-            break
+    printf "========================================================\n"
+    printf "  Tom tat lua chon\n"
+    printf "========================================================\n"
+    echo ""
+    printf "  %-22s: %s %s (RAM %s MB, %s CPU)\n" "He dieu hanh" "${OS_ID}" "${OS_VERSION_ID}" "${ram_mb}" "${CPU_CORES}"
+    if [ "${INSTALL_MODE}" == "dev" ]; then
+        printf "  %-22s: %s\n" "Che do" "Dev server noi bo (IP:PORT)"
+    else
+        printf "  %-22s: %s\n" "Che do" "Production (VPS public)"
+    fi
+    printf "  %-22s: %s\n" "Email" "${ADMIN_EMAIL}"
+    printf "  %-22s: %s\n" "IP server" "${IPADDRESS}"
+    printf "  %-22s: %s\n" "Port SSH" "${SSH_PORT}"
+    printf "  %-22s: %s\n" "Web server" "${WEBSERVER^}"
+    if [ "${MULTI_PHP}" == "y" ]; then
+        printf "  %-22s: %s\n" "PHP" "${PHP_VERSION} (PHP 1), ${PHP_VERSION_2} (PHP 2)"
+    else
+        printf "  %-22s: %s\n" "PHP" "${PHP_VERSION}"
+    fi
+    printf "  %-22s: %s\n" "MariaDB" "${MARIADB_VERSION}"
+    if [ "${SWAP_SIZE:-0}" -gt 0 ] 2>/dev/null; then
+        printf "  %-22s: %s\n" "Swap" "Tao moi ${SWAP_SIZE}G"
+    fi
+    if [ "${INSTALL_CROWDSEC}" == "y" ]; then
+        yn="Co (giu access log ${CS_ROTATE_DAYS} ngay)"
+        [ "${INSTALL_APPSEC}" == "y" ] && yn="${yn}, bat AppSec (WAF)"
+    else
+        yn="Khong"
+    fi
+    printf "  %-22s: %s\n" "CrowdSec" "${yn}"
+    if [ "${SETUP_TELEGRAM}" == "y" ]; then
+        printf "  %-22s: %s\n" "Telegram" "Co (Chat ID ${TELEGRAM_ID})"
+    else
+        printf "  %-22s: %s\n" "Telegram" "Khong"
+    fi
+    echo ""
+    if [ "${INSTALL_MODE}" != "dev" ]; then
+        printf "${RED}%s${NC}\n" "  Server se tu khoi dong lai sau khi cai dat xong."
+        echo ""
+    fi
+    wz_choose 1 "Bat dau cai dat" "Chon lai tu dau" "Huy cai dat"
+}
+
+# All questions are asked up front, the installation then runs without interaction
+run_wizard() {
+    while true; do
+        WZ_STEP=0
+        wz_mode
+        set_email
+        input_ip
+        option_change_ssh_port
+        select_php_ver
+        option_webserver
+        wz_swap
+        option_security
+        option_telegram
+        wz_summary
+        case "${WZ_CHOICE}" in
+        1) break ;;
+        3)
+            echo "Da huy cai dat. Chua co thay doi nao tren server."
+            exit 0
             ;;
-        "No")
-            MULTI_PHP="n"
-            break
-            ;;
-        *) printf "${RED}%s${NC}\n" "${WRONG_PHP_SELECT_2} $REPLY" ;;
         esac
     done
-    sleep 1
-}
-
-select_php_ver_2() {
-    clear
-    while true; do
-        printf "%s\n" "${SELECT_PHP_2}"
-        PS3="${ENTER_OPTION}"
-        select opt in "${PHP_LIST[@]}"; do
-            case $opt in
-            "$opt")
-                PHP_VERSION_2="${opt}"
-                break
-                ;;
-            esac
-        done
-        echo
-
-        if [[ " ${PHP_LIST[*]} " == *" ${PHP_VERSION_2} "* ]]; then
-            break
-        else
-            clear
-            printf "${RED}%s\n${NC}" "${INVALID_PHP2_OPTION}"
-        fi
-    done
-
-    PHP_VERSION_2=${PHP_VERSION_2//php/}
-    PHP2_CONFIG_PATH="/etc/php/${PHP_VERSION_2}/fpm"
-    PHP2_INI_PATH="${PHP2_CONFIG_PATH}/conf.d"
-    PHP2_POOL_PATH="${PHP2_CONFIG_PATH}/pool.d"
-    PHP2_CLI_PATH="/etc/php/${PHP_VERSION_2}/cli/conf.d"
-    sleep 1
-}
-
-check_duplicate_php() {
-    if [[ "${PHP_VERSION_2}" == "${PHP_VERSION}" ]]; then
-        MULTI_PHP="n"
-        echo "Phien ban PHP thứ 2 trung voi phien ban mac dinh. He thong se cai dat mot phien ban PHP."
-    fi
+    php_set_paths
 }
 
 ############################################
@@ -3112,38 +3235,17 @@ EOsysctl
 
 welcome
 check_dns_server
+run_wizard
+
+clear
+echo "Bat dau cai dat, qua trinh co the mat 15-30 phut. Log: /opt/install.txt"
 os_selinux_permissive
 os_install_base || fatal "Khong cai duoc cac goi can thiet."
 create_swap
 set_timezone
 
 create_bash_dir
-set_email
 ssh_login_notify
-input_ip
-
-SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
-SSH_PORT=${SSH_PORT:-22}
-prompt_ssh="n"
-if [ "${INSTALL_MODE}" != "dev" ]; then
-    option_change_ssh_port
-    if [[ ! "$prompt_ssh" =~ ^([yY]) ]]; then
-        SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
-        SSH_PORT=${SSH_PORT:-22}
-    fi
-fi
-
-select_php_ver
-select_php_multi
-
-if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
-    select_php_ver_2
-    check_duplicate_php
-fi
-
-option_webserver
-option_security
-option_telegram
 
 php_memory_calculation
 cal_ssl_cache_size
