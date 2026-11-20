@@ -14,11 +14,15 @@ _show_info(){
     printf "Admin tool user              : admin\n"
     printf "Admin tool password          : %s\n"  "${admin_pwd}"
     printf "==========================================\n"
-    printf "User phpMyAdmin              : admin\n"
-    printf "Password phpMyAdmin          : %s\n"  "${mysql_pwd}"
-    printf "Link phpMyAdmin              : %s\n" "http://${IPADDRESS}:${admin_port}/phpmyadmin"
-    printf "%s\n" "${RED}Luu y: phpMyAdmin duoc bao ve bang 2 lop mat khau.${NC}"
-    printf "%s\n" "${RED}De truy cap phpMyAdmin cac ban can dang nhap bang thong tin Admin Tool truoc.${NC}"
+    printf "User Database (phpMyAdmin)   : admin\n"
+    printf "Password Database            : %s\n"  "${mysql_pwd}"
+    if comp_installed phpmyadmin; then
+        printf "Link phpMyAdmin              : %s\n" "http://${IPADDRESS}:${admin_port}/phpmyadmin"
+        printf "%s\n" "${RED}Luu y: phpMyAdmin duoc bao ve bang 2 lop mat khau.${NC}"
+        printf "%s\n" "${RED}De truy cap phpMyAdmin cac ban can dang nhap bang thong tin Admin Tool truoc.${NC}"
+    else
+        printf "%s\n" "${RED}phpMyAdmin chua duoc cai dat (cai trong menu Admin Tool).${NC}"
+    fi
 }
 
 _show_info

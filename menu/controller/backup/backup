@@ -105,7 +105,7 @@ _create_drive_connect() {
         clear
         printf "%s\n" "${RED}${lang_cancel_action}${NC}"
     else
-        rclone config create "${remote_name}" drive config_is_local false scope drive use_trash false
+        comp_ensure rclone && rclone config create "${remote_name}" drive config_is_local false scope drive use_trash false
         clear
 
         _select_remote

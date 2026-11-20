@@ -33,6 +33,7 @@ while [ "${CHOICE}" != "0" ]; do
     printf "%s2. ${lang_test_nginx_config}%s\n" "${GREEN}" "${NC}"
     printf "%s3. Update Nginx%s\n" "${GREEN}" "${NC}"
     printf "%s4. Rebuild Nginx%s\n" "${GREEN}" "${NC}"
+    printf "%s5. Module Nginx (Brotli, Headers-More, Lua, VTS, Cache Purge)%s\n" "${GREEN}" "${NC}"
     printf "%s=========================%s\n" "${GREEN}" "${NC}"
     read -r -p " ${SELECT_OPTION} " CHOICE
 
@@ -74,6 +75,11 @@ while [ "${CHOICE}" != "0" ]; do
     4)
         clear
         update_nginx rebuild
+        lemp_nginx
+        ;;
+    5)
+        clear
+        nginx_modules_menu
         lemp_nginx
         ;;
     0)

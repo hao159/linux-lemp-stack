@@ -637,16 +637,177 @@ EOF
 }
 
 ############################################
-# Nginx (built from source so every OS gets the same modules:
-# brotli, headers-more, cache purge, vts)
+# Nginx (built from source so every OS gets the same binary).
+# Third party modules are optional: only the ones listed in
+# NGINX_MODULES_FILE are compiled in (none = plain Nginx, lightest).
 ############################################
-# nginx_build <version>
 # LuaJIT and the Lua libraries live in their own prefix, the default search path of
 # this LuaJIT points there so Nginx needs no lua_package_path to find resty.core.
 NGINX_LUAJIT_PREFIX="/usr/local/hostvn-luajit"
+NGINX_MODULES_FILE="/var/hostvn/nginx_modules"
+NGINX_MODULES_ALL="brotli headers_more lua vts cache_purge"
+
+# nginx_module_label <module>
+nginx_module_label() {
+    case "$1" in
+    brotli) echo "Brotli - nen tot hon gzip, ton them CPU" ;;
+    headers_more) echo "Headers-More - sua/xoa header (can cho FastCGI cache WooCommerce)" ;;
+    lua) echo "Lua (LuaJIT) - can cho CrowdSec AppSec (WAF), ton them RAM" ;;
+    vts) echo "VTS - thong ke traffic theo vhost" ;;
+    cache_purge) echo "Cache Purge - xoa FastCGI cache theo URL" ;;
+    *) echo "$1" ;;
+    esac
+}
+
+# Name of the module in "nginx -V"
+_nginx_module_src() {
+    case "$1" in
+    brotli) echo "ngx_brotli" ;;
+    headers_more) echo "headers-more-nginx-module" ;;
+    lua) echo "lua-nginx-module" ;;
+    vts) echo "nginx-module-vts" ;;
+    cache_purge) echo "ngx_cache_purge" ;;
+    esac
+}
+
+# nginx_has_module <module> : compiled into the running binary
+nginx_has_module() {
+    local src
+    src=$(_nginx_module_src "$1")
+    [ -n "${src}" ] && nginx -V 2>&1 | grep -q -- "${src}"
+}
 
 nginx_has_lua() {
-    nginx -V 2>&1 | grep -q "lua-nginx-module"
+    nginx_has_module lua
+}
+
+# Modules to build. Servers installed before the list existed had every module.
+nginx_modules_get() {
+    if [ -f "${NGINX_MODULES_FILE}" ]; then
+        tr -s ' \n' ' ' <"${NGINX_MODULES_FILE}" | sed 's/^ //; s/ $//'
+    else
+        echo "${NGINX_MODULES_ALL}"
+    fi
+}
+
+# nginx_modules_sort <module>... : canonical order, unknown names dropped
+nginx_modules_sort() {
+    local m out=""
+    for m in ${NGINX_MODULES_ALL}; do
+        [[ " $* " == *" ${m} "* ]] && out="${out} ${m}"
+    done
+    echo "${out# }"
+}
+
+# nginx_modules_set <module>... : the list used by the next build
+nginx_modules_set() {
+    mkdir -p "$(dirname "${NGINX_MODULES_FILE}")"
+    nginx_modules_sort "$@" >"${NGINX_MODULES_FILE}"
+}
+
+nginx_module_selected() {
+    [[ " $(nginx_modules_get) " == *" $1 "* ]]
+}
+
+nginx_modules_add() {
+    nginx_module_selected "$1" && return 0
+    # shellcheck disable=SC2046
+    nginx_modules_set $(nginx_modules_get) "$1"
+}
+
+nginx_modules_del() {
+    local m keep=""
+    for m in $(nginx_modules_get); do
+        [ "${m}" != "$1" ] && keep="${keep} ${m}"
+    done
+    # shellcheck disable=SC2086
+    nginx_modules_set ${keep}
+}
+
+# Write the parts of the configuration that depend on a module, for the modules that
+# the installed binary really has. Run after every build, before "nginx -t".
+nginx_modules_conf() {
+    local extra="/etc/nginx/extra" main="/etc/nginx/nginx.conf"
+    [ -d "${extra}" ] || return 0
+
+    if nginx_has_module brotli; then
+        cat >"${extra}/brotli.conf" <<'EOFBRCONF'
+##Brotli Compression
+brotli on;
+brotli_static on;
+brotli_buffers 16 8k;
+brotli_comp_level 5;
+brotli_types
+    application/atom+xml
+    application/geo+json
+    application/javascript
+    application/json
+    application/ld+json
+    application/manifest+json
+    application/rdf+xml
+    application/rss+xml
+    application/vnd.ms-fontobject
+    application/wasm
+    application/x-font-opentype
+    application/x-font-truetype
+    application/x-font-ttf
+    application/x-javascript
+    application/x-web-app-manifest+json
+    application/xhtml+xml
+    application/xml
+    application/xml+rss
+    font/eot
+    font/opentype
+    font/otf
+    image/bmp
+    image/svg+xml
+    image/vnd.microsoft.icon
+    image/x-icon
+    image/x-win-bitmap
+    text/cache-manifest
+    text/calendar
+    text/css
+    text/javascript
+    text/markdown
+    text/plain
+    text/vcard
+    text/vnd.rim.location.xloc
+    text/vtt
+    text/x-component
+    text/x-cross-domain-policy
+    text/xml;
+EOFBRCONF
+    else
+        echo "# Brotli: Nginx chua build kem module nay (hostvn -> LEMP -> Nginx -> Module Nginx)" \
+            >"${extra}/brotli.conf"
+    fi
+    # Images and archives are never pre-compressed, the directive is not needed
+    sed -i '/brotli_static off;/d' "${extra}/staticfiles.conf" 2>/dev/null
+
+    if nginx_has_module headers_more; then
+        cat >"${extra}/headers.conf" <<'EOheaders'
+# Custom Response Headers (headers-more)
+more_set_headers 'Server: HOSTVN.NET';
+more_set_headers 'X-Content-Type-Options: nosniff';
+more_set_headers 'X-XSS-Protection: 1; mode=block';
+more_set_headers 'Strict-Transport-Security: max-age=31536000; includeSubDomains; preload';
+more_set_headers 'Referrer-Policy: no-referrer-when-downgrade';
+EOheaders
+    else
+        cat >"${extra}/headers.conf" <<'EOheaders'
+# Custom Response Headers (core add_header, a location with its own add_header does not inherit them)
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+add_header Referrer-Policy "no-referrer-when-downgrade" always;
+EOheaders
+    fi
+    # Older nginx.conf had the headers inline
+    if [ -f "${main}" ] && ! grep -q "extra/headers.conf" "${main}"; then
+        sed -i '/^[[:space:]]*more_set_headers /d' "${main}"
+        sed -i "0,/^\([[:space:]]*\)include[[:space:]]\+\/etc\/nginx\/extra\/nginx_cache\.conf;/s||\1include /etc/nginx/extra/headers.conf;\n&|" "${main}"
+    fi
+    return 0
 }
 
 # _nginx_build_lua : run inside the module directory, sources already downloaded
@@ -671,26 +832,28 @@ _nginx_build_lua() {
         install -m 755 cjson.so "${cpath}/cjson.so") || return 1
 }
 
-nginx_build() {
-    local ver="$1" cache_purge_v headers_more_v vts_v module_path="/usr/share/nginx_module"
-    local luajit_v ndk_v lua_module_v resty_core_v resty_lrucache_v cjson_v resty_http_v resty_string_v
-    cache_purge_v=$(get_version ngx_cache_purge_version)
-    headers_more_v=$(get_version more_clear_headers_v)
-    vts_v=$(get_version nginx_module_vts_v)
-    luajit_v=$(get_version luajit_version)
-    ndk_v=$(get_version ngx_devel_kit_version)
-    lua_module_v=$(get_version lua_nginx_module_version)
-    resty_core_v=$(get_version lua_resty_core_version)
-    resty_lrucache_v=$(get_version lua_resty_lrucache_version)
-    cjson_v=$(get_version lua_cjson_version)
-    resty_http_v=$(get_version lua_resty_http_version)
-    resty_string_v=$(get_version lua_resty_string_version)
+# _nginx_fetch <url> : download and unpack a tarball in the current directory
+_nginx_fetch() {
+    wget -qO- "$1" | tar -xz
+}
 
-    if [ -z "${ver}" ] || [ -z "${cache_purge_v}" ] || [ -z "${headers_more_v}" ] || [ -z "${vts_v}" ] ||
-        [ -z "${luajit_v}" ] || [ -z "${ndk_v}" ] || [ -z "${lua_module_v}" ] || [ -z "${resty_core_v}" ] ||
-        [ -z "${resty_lrucache_v}" ] || [ -z "${cjson_v}" ] || [ -z "${resty_http_v}" ] ||
-        [ -z "${resty_string_v}" ]; then
-        echo "Can not read nginx versions from the version file."
+# nginx_build <version> [module...]
+# Without a module list the saved one is used (nginx_modules_get), so an update or a
+# rebuild keeps the modules the administrator chose.
+nginx_build() {
+    local ver="$1" module_path="/usr/share/nginx_module" m modules
+    local cache_purge_v headers_more_v vts_v
+    local luajit_v ndk_v lua_module_v resty_core_v resty_lrucache_v cjson_v resty_http_v resty_string_v
+    local add=() env=()
+    shift
+    if [ $# -gt 0 ]; then
+        modules="$*"
+    else
+        modules=$(nginx_modules_get)
+    fi
+
+    if [ -z "${ver}" ]; then
+        echo "Can not read the nginx version from the version file."
         return 1
     fi
 
@@ -698,47 +861,102 @@ nginx_build() {
     mkdir -p "${module_path}"
     cd "${module_path}" || return 1
 
-    wget -qO- "https://nginx.org/download/nginx-${ver}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/nginx-modules/ngx_cache_purge/archive/refs/tags/${cache_purge_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/headers-more-nginx-module/archive/refs/tags/v${headers_more_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/vozlt/nginx-module-vts/archive/refs/tags/v${vts_v}.tar.gz" | tar -xz
-    git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/google/ngx_brotli
-
-    # Lua (CrowdSec AppSec bouncer)
-    wget -qO- "https://github.com/openresty/luajit2/archive/refs/tags/v${luajit_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v${ndk_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/lua-nginx-module/archive/refs/tags/v${lua_module_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/lua-resty-core/archive/refs/tags/v${resty_core_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${resty_lrucache_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/lua-cjson/archive/refs/tags/${cjson_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/ledgetech/lua-resty-http/archive/refs/tags/v${resty_http_v}.tar.gz" | tar -xz
-    wget -qO- "https://github.com/openresty/lua-resty-string/archive/refs/tags/v${resty_string_v}.tar.gz" | tar -xz
-
-    if [ ! -d "nginx-${ver}" ] || [ ! -d ngx_brotli ] || [ ! -d "luajit2-${luajit_v}" ] ||
-        [ ! -d "ngx_devel_kit-${ndk_v}" ] || [ ! -d "lua-nginx-module-${lua_module_v}" ] ||
-        [ ! -d "lua-resty-core-${resty_core_v}" ] || [ ! -d "lua-resty-lrucache-${resty_lrucache_v}" ] ||
-        [ ! -d "lua-cjson-${cjson_v}" ] || [ ! -d "lua-resty-http-${resty_http_v}" ] ||
-        [ ! -d "lua-resty-string-${resty_string_v}" ]; then
-        echo "Download nginx source failed."
+    _nginx_fetch "https://nginx.org/download/nginx-${ver}.tar.gz"
+    [ -d "nginx-${ver}" ] || {
+        echo "Download nginx ${ver} failed."
         return 1
-    fi
+    }
 
-    if ! _nginx_build_lua; then
-        echo "Build LuaJIT failed."
-        return 1
-    fi
-
-    # Without the system brotli library the bundled copy has to be built first
-    if ! [ -f /usr/include/brotli/encode.h ]; then
-        pkg_install cmake
-        mkdir -p ngx_brotli/deps/brotli/out
-        (cd ngx_brotli/deps/brotli/out &&
-            cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=./installed .. &&
-            cmake --build . --config Release --target brotlienc) || return 1
-    fi
+    for m in ${modules}; do
+        case "${m}" in
+        cache_purge)
+            cache_purge_v=$(get_version ngx_cache_purge_version)
+            _nginx_fetch "https://github.com/nginx-modules/ngx_cache_purge/archive/refs/tags/${cache_purge_v}.tar.gz"
+            [ -n "${cache_purge_v}" ] && [ -d "ngx_cache_purge-${cache_purge_v}" ] || {
+                echo "Download ngx_cache_purge failed."
+                return 1
+            }
+            add+=("--add-module=../ngx_cache_purge-${cache_purge_v}")
+            ;;
+        headers_more)
+            headers_more_v=$(get_version more_clear_headers_v)
+            _nginx_fetch "https://github.com/openresty/headers-more-nginx-module/archive/refs/tags/v${headers_more_v}.tar.gz"
+            [ -n "${headers_more_v}" ] && [ -d "headers-more-nginx-module-${headers_more_v}" ] || {
+                echo "Download headers-more failed."
+                return 1
+            }
+            add+=("--add-module=../headers-more-nginx-module-${headers_more_v}")
+            ;;
+        vts)
+            vts_v=$(get_version nginx_module_vts_v)
+            _nginx_fetch "https://github.com/vozlt/nginx-module-vts/archive/refs/tags/v${vts_v}.tar.gz"
+            [ -n "${vts_v}" ] && [ -d "nginx-module-vts-${vts_v}" ] || {
+                echo "Download nginx-module-vts failed."
+                return 1
+            }
+            add+=("--add-module=../nginx-module-vts-${vts_v}")
+            ;;
+        brotli)
+            command -v git >/dev/null 2>&1 || pkg_install git
+            git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/google/ngx_brotli
+            [ -d ngx_brotli ] || {
+                echo "Download ngx_brotli failed."
+                return 1
+            }
+            # Without the system brotli library the bundled copy has to be built first
+            if ! [ -f /usr/include/brotli/encode.h ]; then
+                pkg_install cmake
+                mkdir -p ngx_brotli/deps/brotli/out
+                (cd ngx_brotli/deps/brotli/out &&
+                    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=./installed .. &&
+                    cmake --build . --config Release --target brotlienc) || return 1
+            fi
+            add+=("--add-module=../ngx_brotli")
+            ;;
+        lua)
+            # CrowdSec AppSec bouncer
+            luajit_v=$(get_version luajit_version)
+            ndk_v=$(get_version ngx_devel_kit_version)
+            lua_module_v=$(get_version lua_nginx_module_version)
+            resty_core_v=$(get_version lua_resty_core_version)
+            resty_lrucache_v=$(get_version lua_resty_lrucache_version)
+            cjson_v=$(get_version lua_cjson_version)
+            resty_http_v=$(get_version lua_resty_http_version)
+            resty_string_v=$(get_version lua_resty_string_version)
+            if [ -z "${luajit_v}" ] || [ -z "${ndk_v}" ] || [ -z "${lua_module_v}" ] || [ -z "${resty_core_v}" ] ||
+                [ -z "${resty_lrucache_v}" ] || [ -z "${cjson_v}" ] || [ -z "${resty_http_v}" ] ||
+                [ -z "${resty_string_v}" ]; then
+                echo "Can not read the Lua versions from the version file."
+                return 1
+            fi
+            _nginx_fetch "https://github.com/openresty/luajit2/archive/refs/tags/v${luajit_v}.tar.gz"
+            _nginx_fetch "https://github.com/vision5/ngx_devel_kit/archive/refs/tags/v${ndk_v}.tar.gz"
+            _nginx_fetch "https://github.com/openresty/lua-nginx-module/archive/refs/tags/v${lua_module_v}.tar.gz"
+            _nginx_fetch "https://github.com/openresty/lua-resty-core/archive/refs/tags/v${resty_core_v}.tar.gz"
+            _nginx_fetch "https://github.com/openresty/lua-resty-lrucache/archive/refs/tags/v${resty_lrucache_v}.tar.gz"
+            _nginx_fetch "https://github.com/openresty/lua-cjson/archive/refs/tags/${cjson_v}.tar.gz"
+            _nginx_fetch "https://github.com/ledgetech/lua-resty-http/archive/refs/tags/v${resty_http_v}.tar.gz"
+            _nginx_fetch "https://github.com/openresty/lua-resty-string/archive/refs/tags/v${resty_string_v}.tar.gz"
+            if [ ! -d "luajit2-${luajit_v}" ] || [ ! -d "ngx_devel_kit-${ndk_v}" ] ||
+                [ ! -d "lua-nginx-module-${lua_module_v}" ] || [ ! -d "lua-resty-core-${resty_core_v}" ] ||
+                [ ! -d "lua-resty-lrucache-${resty_lrucache_v}" ] || [ ! -d "lua-cjson-${cjson_v}" ] ||
+                [ ! -d "lua-resty-http-${resty_http_v}" ] || [ ! -d "lua-resty-string-${resty_string_v}" ]; then
+                echo "Download Lua sources failed."
+                return 1
+            fi
+            if ! _nginx_build_lua; then
+                echo "Build LuaJIT failed."
+                return 1
+            fi
+            add+=("--add-module=../ngx_devel_kit-${ndk_v}" "--add-module=../lua-nginx-module-${lua_module_v}"
+                "--with-ld-opt=-Wl,-rpath,${NGINX_LUAJIT_PREFIX}/lib")
+            env=("LUAJIT_LIB=${NGINX_LUAJIT_PREFIX}/lib" "LUAJIT_INC=${NGINX_LUAJIT_PREFIX}/include/luajit-2.1")
+            ;;
+        esac
+    done
 
     cd "${module_path}/nginx-${ver}" || return 1
-    LUAJIT_LIB="${NGINX_LUAJIT_PREFIX}/lib" LUAJIT_INC="${NGINX_LUAJIT_PREFIX}/include/luajit-2.1" \
+    env "${env[@]}" \
         ./configure \
         "--user=nginx" \
         "--group=nginx" \
@@ -767,13 +985,7 @@ nginx_build() {
         "--with-http_sub_module" \
         "--with-http_auth_request_module" \
         "--with-pcre-jit" \
-        "--add-module=../ngx_cache_purge-${cache_purge_v}" \
-        "--add-module=../headers-more-nginx-module-${headers_more_v}" \
-        "--add-module=../ngx_brotli" \
-        "--add-module=../nginx-module-vts-${vts_v}" \
-        "--add-module=../ngx_devel_kit-${ndk_v}" \
-        "--add-module=../lua-nginx-module-${lua_module_v}" \
-        "--with-ld-opt=-Wl,-rpath,${NGINX_LUAJIT_PREFIX}/lib" \
+        "${add[@]}" \
         "--with-cc-opt=-DFD_SETSIZE=32768" || return 1
 
     make -j"$(nproc)" || return 1

@@ -208,6 +208,11 @@ _laravel_auto_install() {
             printf "%s\n" "${RED}Ban nhap sai, vui long nhap lai.${NC}"
         done
 
+        # Composer is optional at install time (Minimal), Laravel needs it
+        if ! comp_installed composer; then
+            printf "%s\n" "${GREEN}Dang cai dat Composer...${NC}"
+            comp_composer_install
+        fi
         _cd_dir "/home/${user}/${domain}"
         rm -rf public_html
         composer create-project laravel/laravel="${laravel_version}.*" public_html <<EOF

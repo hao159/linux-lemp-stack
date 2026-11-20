@@ -1,0 +1,156 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Add or remove the optional Nginx modules: Nginx is built again (same version) with the
+# new list, the old binary is restored when the build or the configuration test fails.
+
+source /var/hostvn/menu/helpers/update
+
+# Why a module can not be removed right now, empty = it can
+_mod_in_use() {
+    case "$1" in
+    lua)
+        grep -q "crowdsec_nginx.conf" /etc/nginx/nginx.conf 2>/dev/null &&
+            echo "CrowdSec AppSec dang bat (tat AppSec truoc: Firewall -> CrowdSec & AppSec)"
+        ;;
+    headers_more)
+        grep -lq "php_cache_woo.conf" "${VHOST_DIR}"/*.conf 2>/dev/null &&
+            echo "co website dang dung FastCGI cache WooCommerce (tat cache truoc: Cache -> Nginx FastCGI cache)"
+        ;;
+    vts)
+        grep -rqs "vhost_traffic_status" /etc/nginx/ &&
+            echo "cau hinh Nginx dang dung vhost_traffic_status"
+        ;;
+    cache_purge)
+        grep -rqsE "^[[:space:]]*fastcgi_cache_purge" /etc/nginx/ &&
+            echo "cau hinh Nginx dang dung fastcgi_cache_purge"
+        ;;
+    esac
+}
+
+_mod_draw() {
+    local m n=0 state
+    clear
+    printf "%s\n" "${GREEN}=================================================${NC}"
+    printf "%s\n" "${GREEN}  Module Nginx - Nginx $(upd_nginx_current)${NC}"
+    printf "%s\n" "${GREEN}=================================================${NC}"
+    echo "Muc [x] se duoc build kem Nginx. Module khong dung thi nen bo de Nginx nhe hon."
+    echo ""
+    for m in ${NGINX_MODULES_ALL}; do
+        n=$((n + 1))
+        if nginx_has_module "${m}"; then
+            state="dang co"
+        else
+            state="chua co"
+        fi
+        if [[ " ${want} " == *" ${m} "* ]]; then
+            printf "  %s. [x] %s (%s)\n" "${n}" "$(nginx_module_label "${m}")" "${state}"
+        else
+            printf "  %s. [ ] %s (%s)\n" "${n}" "$(nginx_module_label "${m}")" "${state}"
+        fi
+    done
+    echo ""
+    [ -n "${note}" ] && printf "%s\n\n" "${RED}${note}${NC}"
+}
+
+# The modules of the running binary: that is what the list must describe
+_mod_current() {
+    local m out=""
+    for m in ${NGINX_MODULES_ALL}; do
+        nginx_has_module "${m}" && out="${out} ${m}"
+    done
+    echo "${out# }"
+}
+
+_run() {
+    local current answer tok m keep reason saved x
+    current=$(_mod_current)
+    want="${current}"
+    note=""
+    while true; do
+        _mod_draw
+        echo "Nhap so de bat/tat (vd: 1 3). Enter = ap dung, 0 = thoat."
+        read -r -p "Lua chon: " answer
+        [ "${answer}" == "0" ] && {
+            ALERT=$(printf "%s" "${RED}${lang_cancel_action:-Huy hanh dong.}${NC}")
+            return
+        }
+        [ -z "${answer}" ] && break
+        note=""
+        for tok in ${answer}; do
+            if ! [[ "${tok}" =~ ^[1-5]$ ]]; then
+                note="Bo qua lua chon khong hop le: ${tok}"
+                continue
+            fi
+            m=$(echo "${NGINX_MODULES_ALL}" | cut -d' ' -f"${tok}")
+            if [[ " ${want} " == *" ${m} "* ]]; then
+                reason=$(_mod_in_use "${m}")
+                if [ -n "${reason}" ]; then
+                    note="Khong bo duoc ${m}: ${reason}."
+                    continue
+                fi
+                keep=""
+                for x in ${want}; do
+                    [ "${x}" != "${m}" ] && keep="${keep} ${x}"
+                done
+                want="${keep# }"
+            else
+                want="${want} ${m}"
+            fi
+        done
+    done
+
+    # canonical order, then compare with the binary
+    # shellcheck disable=SC2086
+    saved=$(nginx_modules_sort ${want})
+    if [ "${saved}" == "${current}" ]; then
+        # shellcheck disable=SC2086
+        nginx_modules_set ${current}
+        ALERT=$(printf "%s" "${GREEN}Khong co thay doi module.${NC}")
+        return
+    fi
+
+    echo "Module moi: ${saved:-khong co (Nginx toi gian)}"
+    echo "Nginx se duoc build lai (vai phut), restart mot lan. Neu loi se tu khoi phuc ban cu."
+    read -r -p "Ban co muon tiep tuc khong ? (y/n) " answer
+    if ! [[ "${answer}" =~ ^([yY])$ ]]; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return
+    fi
+
+    # shellcheck disable=SC2086
+    nginx_modules_set ${saved}
+    printf "%s\n" "${GREEN}Dang build Nginx $(upd_nginx_current)...${NC}"
+    upd_nginx_install "$(upd_nginx_current)"
+    case $? in
+    0)
+        ALERT=$(printf "%s" "${GREEN}Build lai Nginx thanh cong. Module: ${saved:-khong co}.${NC}")
+        ;;
+    4)
+        # shellcheck disable=SC2086
+        nginx_modules_set ${current}
+        ALERT=$(printf "%s" "${RED}Cau hinh Nginx hien tai dang loi (nginx -t). Vui long sua truoc.${NC}")
+        ;;
+    *)
+        # shellcheck disable=SC2086
+        nginx_modules_set ${current}
+        ALERT=$(printf "%s" "${RED}Build Nginx that bai, da giu Nginx cu. Log: ${UPD_NGINX_LOG}${NC}")
+        ;;
+    esac
+}
+
+ALERT=""
+want=""
+note=""
+_run
+clear
+printf "%s\n" "${ALERT}"

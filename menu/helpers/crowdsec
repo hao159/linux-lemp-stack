@@ -355,13 +355,19 @@ _cs_appsec_port() {
     echo "${p:-7422}"
 }
 
-# Servers installed before v1.1.0 run an Nginx without Lua: build the same version again.
+# Nginx without Lua (installed without the Lua module, or before v1.1.0):
+# build the same version again with Lua added to the chosen modules.
 cs_nginx_rebuild_lua() {
-    local ver
+    local ver had
     ver=$(nginx -v 2>&1 | grep -o '[0-9.]*$')
+    nginx_module_selected lua && had=1
+    nginx_modules_add lua
     mkdir -p /var/log/hostvn
-    (nginx_build "${ver}") >/var/log/hostvn/nginx_build.log 2>&1 || return 1
-    nginx_has_lua || return 1
+    if ! (nginx_build "${ver}") >/var/log/hostvn/nginx_build.log 2>&1 || ! nginx_has_lua; then
+        [ -n "${had}" ] || nginx_modules_del lua
+        return 1
+    fi
+    nginx_modules_conf
     nginx -t >/dev/null 2>&1 || return 1
     systemctl restart nginx
 }

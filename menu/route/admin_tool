@@ -19,8 +19,16 @@ printf "%s===========================%s\n" "${GREEN}" "${NC}"
 
 while [ "${CHOICE}" != "0" ]
 do
-    printf "%s1. Update phpMyAdmin%s\n" "${GREEN}" "${NC}"
-    printf "%s2. Update Opcache Panel%s\n" "${GREEN}" "${NC}"
+    if comp_installed phpmyadmin; then
+        printf "%s1. Update phpMyAdmin%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s1. Cai dat phpMyAdmin%s\n" "${GREEN}" "${NC}"
+    fi
+    if comp_installed opcache_dashboard; then
+        printf "%s2. Update Opcache Panel%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s2. Cai dat Opcache Panel%s\n" "${GREEN}" "${NC}"
+    fi
     printf "%s3. Update Memcached Admin%s\n" "${GREEN}" "${NC}"
     printf "%s4. Update Redis Admin%s\n" "${GREEN}" "${NC}"
     printf "%s5. ${admin_tool_password_reset}%s\n" "${GREEN}" "${NC}"

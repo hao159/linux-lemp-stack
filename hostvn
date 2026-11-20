@@ -37,9 +37,14 @@ source "${LEMP_SRC_DIR}/menu/helpers/crowdsec"
 source "${LEMP_SRC_DIR}/menu/helpers/update"
 # shellcheck source=menu/helpers/apache
 source "${LEMP_SRC_DIR}/menu/helpers/apache"
+# shellcheck source=menu/helpers/component
+source "${LEMP_SRC_DIR}/menu/helpers/component"
 
 # prod = public VPS, dev = internal dev server (sites on IP:PORT). Chosen in the wizard.
 INSTALL_MODE="prod"
+# minimal = only what serves the websites, advanced = the full set. Chosen in the wizard,
+# every optional component can then be switched on or off one by one.
+INSTALL_PROFILE=""
 
 SCRIPTS_VERSION=$(get_version script_version)
 BASH_DIR="/var/hostvn"
@@ -122,6 +127,11 @@ WZ_STEP=0
 # wz_step <title> : new screen of the wizard
 wz_step() {
     WZ_STEP=$((WZ_STEP + 1))
+    wz_header "$1"
+}
+
+# wz_header <title> : draw the current screen again (same step number)
+wz_header() {
     clear
     printf "========================================================\n"
     printf "  Cai dat LEMP Stack - Buoc %s: %s\n" "${WZ_STEP}" "$1"
@@ -396,29 +406,193 @@ option_webserver() {
     fi
 }
 
-# CrowdSec, AppSec and Telegram are optional, all of them can be added later from the menu.
-option_security() {
-    local prev_cs="${INSTALL_CROWDSEC}" prev_appsec="${INSTALL_APPSEC}"
-    INSTALL_CROWDSEC="n"
-    INSTALL_APPSEC="n"
-    wz_step "CrowdSec & AppSec"
-    echo "CrowdSec doc log web server/SSH va tu dong chan IP tan cong, IP scan (giam log ban)."
-    echo "Khi cai CrowdSec, access log cua web server se duoc bat (co rotate)."
-    if [ "${WEBSERVER}" != "apache" ]; then
-        echo "AppSec la WAF cua CrowdSec, chan request doc hai truoc khi toi website."
+############################################
+# Profile and optional components
+############################################
+# Every optional component, in the order of the checklist.
+#   ngx_<module> : third party Nginx module (Nginx only)
+#   crowdsec / appsec : security (AppSec = Nginx only)
+WZ_ITEMS_ALL=(ngx_brotli ngx_headers_more ngx_lua ngx_vts ngx_cache_purge
+    phpmyadmin opcache_dashboard composer rclone fail2ban crowdsec appsec)
+declare -A WZ_SEL=()
+
+# Components switched on by each profile. CrowdSec / AppSec are never preselected.
+wz_preset() {
+    local item on=""
+    if [ "${INSTALL_PROFILE}" == "advanced" ]; then
+        on="ngx_brotli ngx_headers_more ngx_vts ngx_cache_purge phpmyadmin opcache_dashboard composer rclone fail2ban"
     fi
-    echo "Bo qua thi van bat duoc sau trong menu hostvn."
-    echo ""
-    if ask_yes_no "Ban co muon cai dat CrowdSec khong ?" "$(yn_default "${prev_cs}")"; then
-        INSTALL_CROWDSEC="y"
-        # AppSec runs in the Nginx Lua bouncer, there is none for Apache
-        if [ "${WEBSERVER}" != "apache" ] &&
-            ask_yes_no "Ban co muon bat AppSec (WAF) khong ?" "$(yn_default "${prev_appsec}" y)"; then
-            INSTALL_APPSEC="y"
+    for item in "${WZ_ITEMS_ALL[@]}"; do
+        if [[ " ${on} " == *" ${item} "* ]]; then
+            WZ_SEL[${item}]="y"
+        else
+            WZ_SEL[${item}]="n"
         fi
+    done
+    WZ_PRESET_FOR="${INSTALL_PROFILE}"
+}
+
+# Items that make sense for this server
+wz_items() {
+    local item
+    WZ_ITEMS=()
+    for item in "${WZ_ITEMS_ALL[@]}"; do
+        if [ "${WEBSERVER}" == "apache" ] && [[ "${item}" == ngx_* || "${item}" == "appsec" ]]; then
+            continue
+        fi
+        # Dev servers get no Fail2ban (nothing public to protect)
+        [ "${INSTALL_MODE}" == "dev" ] && [ "${item}" == "fail2ban" ] && continue
+        WZ_ITEMS+=("${item}")
+    done
+}
+
+wz_sel() {
+    [ "${WZ_SEL[$1]}" == "y" ]
+}
+
+wz_item_label() {
+    case "$1" in
+    ngx_*) nginx_module_label "${1#ngx_}" ;;
+    crowdsec) echo "CrowdSec - tu dong chan IP tan cong/scan (bat access log, ton RAM)" ;;
+    appsec) echo "AppSec (WAF) - chan request doc hai, can CrowdSec + Lua" ;;
+    *) comp_label "$1" ;;
+    esac
+}
+
+wz_item_group() {
+    case "$1" in
+    ngx_*) echo "Module Nginx (build kem Nginx)" ;;
+    crowdsec | appsec) echo "Bao mat" ;;
+    *) echo "Cong cu" ;;
+    esac
+}
+
+# AppSec needs CrowdSec and the Lua module, without CrowdSec there is no AppSec
+wz_fix_dependencies() {
+    WZ_NOTE=""
+    if wz_sel appsec; then
+        if ! wz_sel crowdsec || ! wz_sel ngx_lua; then
+            WZ_NOTE="AppSec can CrowdSec va module Lua: da tu dong bat ca hai."
+        fi
+        WZ_SEL[crowdsec]="y"
+        WZ_SEL[ngx_lua]="y"
+    fi
+}
+
+wz_profile() {
+    local ram_mb=$((RAM_TOTAL / 1024)) def=1
+    if [ -n "${INSTALL_PROFILE}" ]; then
+        [ "${INSTALL_PROFILE}" == "advanced" ] && def=2
+    elif [ "${ram_mb}" -ge 3500 ]; then
+        def=2
+    fi
+    wz_step "Goi cai dat"
+    echo "RAM cua VPS: ${ram_mb} MB, ${CPU_CORES} CPU"
+    echo ""
+    echo "Minimal  : Web server don gian (Nginx khong module ngoai), PHP-FPM, MariaDB, SSL Let's Encrypt,"
+    echo "           Opcache gioi han. It tien trinh, build nhanh - hop VPS duoi 4GB RAM."
+    echo "Advanced : Them module Nginx (Brotli, Headers-More, VTS, Cache Purge), phpMyAdmin,"
+    echo "           Opcache Dashboard, Composer, Rclone, Fail2ban, tuy chon PHP thu hai. Hop VPS tu 4GB RAM."
+    echo ""
+    echo "Buoc sau ca hai goi deu chon duoc tung thanh phan (vd: Minimal + phpMyAdmin + Fail2ban)."
+    echo "CrowdSec, AppSec, Lua luon de trong, can thi bat."
+    echo "Thieu gi cung cai them duoc sau trong menu hostvn."
+    echo ""
+    wz_choose "${def}" "Minimal  (VPS cau hinh thap, khuyen dung duoi 4GB RAM)" "Advanced (VPS cau hinh cao)"
+    if [ "${WZ_CHOICE}" == "2" ]; then
+        INSTALL_PROFILE="advanced"
+    else
+        INSTALL_PROFILE="minimal"
+    fi
+    # A restarted wizard keeps the toggles unless the profile changed
+    [ "${WZ_PRESET_FOR}" == "${INSTALL_PROFILE}" ] || wz_preset
+}
+
+wz_components() {
+    local answer n group last i tok bad
+    wz_items
+    WZ_STEP=$((WZ_STEP + 1))
+    WZ_NOTE=""
+    while true; do
+        wz_header "Thanh phan tuy chon"
+        printf "Goi %s. Chi nhung muc [x] duoc cai, muc khac cai sau trong menu hostvn.\n" "${INSTALL_PROFILE^}"
+        last=""
+        n=0
+        for i in "${WZ_ITEMS[@]}"; do
+            n=$((n + 1))
+            group=$(wz_item_group "${i}")
+            if [ "${group}" != "${last}" ]; then
+                echo ""
+                echo "  ${group}"
+                last="${group}"
+            fi
+            if wz_sel "${i}"; then
+                printf "   %2s. [x] %s\n" "${n}" "$(wz_item_label "${i}")"
+            else
+                printf "   %2s. [ ] %s\n" "${n}" "$(wz_item_label "${i}")"
+            fi
+        done
+        echo ""
+        [ -n "${WZ_NOTE}" ] && printf "${RED}%s${NC}\n\n" "${WZ_NOTE}"
+        echo "Nhap so de bat/tat (nhieu so cach nhau dau cach, vd: 1 3), a = chon het, x = bo het."
+        read -r -p "Enter de tiep tuc: " answer
+        [ -z "${answer}" ] && break
+
+        WZ_NOTE=""
+        bad=""
+        for tok in ${answer}; do
+            case "${tok}" in
+            a | A) for i in "${WZ_ITEMS[@]}"; do WZ_SEL[${i}]="y"; done ;;
+            x | X) for i in "${WZ_ITEMS[@]}"; do WZ_SEL[${i}]="n"; done ;;
+            *)
+                if [[ "${tok}" =~ ^[0-9]+$ ]] && [ "${tok}" -ge 1 ] && [ "${tok}" -le "${n}" ]; then
+                    i="${WZ_ITEMS[$((tok - 1))]}"
+                    if wz_sel "${i}"; then
+                        WZ_SEL[${i}]="n"
+                        # no AppSec without CrowdSec / Lua
+                        [[ "${i}" == "crowdsec" || "${i}" == "ngx_lua" ]] && WZ_SEL[appsec]="n"
+                    else
+                        WZ_SEL[${i}]="y"
+                    fi
+                else
+                    bad="${bad} ${tok}"
+                fi
+                ;;
+            esac
+        done
+        wz_fix_dependencies
+        [ -n "${bad}" ] && WZ_NOTE="${WZ_NOTE:+${WZ_NOTE} }Bo qua lua chon khong hop le:${bad}"
+    done
+
+    wz_apply_components
+    if [ "${INSTALL_CROWDSEC}" == "y" ]; then
         echo ""
         cs_prompt_rotate_days
     fi
+}
+
+# Translate the checklist into what the installation uses
+wz_apply_components() {
+    local i
+    NGX_MODULES=""
+    COMPONENTS=""
+    INSTALL_CROWDSEC="n"
+    INSTALL_APPSEC="n"
+    for i in "${WZ_ITEMS[@]}"; do
+        wz_sel "${i}" || continue
+        case "${i}" in
+        ngx_*) NGX_MODULES="${NGX_MODULES} ${i#ngx_}" ;;
+        crowdsec) INSTALL_CROWDSEC="y" ;;
+        appsec) INSTALL_APPSEC="y" ;;
+        *) COMPONENTS="${COMPONENTS} ${i}" ;;
+        esac
+    done
+    NGX_MODULES="${NGX_MODULES# }"
+    COMPONENTS="${COMPONENTS# }"
+}
+
+comp_selected() {
+    [[ " ${COMPONENTS} " == *" $1 "* ]]
 }
 
 option_telegram() {
@@ -521,13 +695,16 @@ select_php_ver() {
     wz_choose "${def}" "${labels[@]}"
     PHP_VERSION="${PHP_LIST[$((WZ_CHOICE - 1))]//php/}"
 
-    echo ""
     MULTI_PHP="n"
-    if ask_yes_no "Cai them phien ban PHP thu hai (chay song song, doi theo tung website) ?" \
-        "$(yn_default "${WZ_MULTI_PHP_DEF}")"; then
-        MULTI_PHP="y"
+    # Minimal: one PHP-FPM only, a second version can be added later (menu PHP)
+    if [ "${INSTALL_PROFILE}" != "minimal" ]; then
+        echo ""
+        if ask_yes_no "Cai them phien ban PHP thu hai (chay song song, doi theo tung website) ?" \
+            "$(yn_default "${WZ_MULTI_PHP_DEF}")"; then
+            MULTI_PHP="y"
+        fi
+        WZ_MULTI_PHP_DEF="${MULTI_PHP}"
     fi
-    WZ_MULTI_PHP_DEF="${MULTI_PHP}"
 
     if [ "${MULTI_PHP}" == "y" ]; then
         labels=()
@@ -562,7 +739,7 @@ php_set_paths() {
 
 # Last screen of the wizard: everything chosen, confirm before touching the server
 wz_summary() {
-    local ram_mb=$((RAM_TOTAL / 1024)) yn
+    local ram_mb=$((RAM_TOTAL / 1024)) yn i
     clear
     printf "========================================================\n"
     printf "  Tom tat lua chon\n"
@@ -577,7 +754,17 @@ wz_summary() {
     printf "  %-22s: %s\n" "Email" "${ADMIN_EMAIL}"
     printf "  %-22s: %s\n" "IP server" "${IPADDRESS}"
     printf "  %-22s: %s\n" "Port SSH" "${SSH_PORT}"
-    printf "  %-22s: %s\n" "Web server" "${WEBSERVER^}"
+    printf "  %-22s: %s\n" "Goi cai dat" "${INSTALL_PROFILE^}"
+    if [ "${WEBSERVER}" == "apache" ]; then
+        printf "  %-22s: %s\n" "Web server" "Apache"
+    else
+        printf "  %-22s: %s\n" "Web server" "Nginx (module: ${NGX_MODULES:-khong co, ban toi gian})"
+    fi
+    yn=""
+    for i in ${COMPONENTS}; do
+        yn="${yn}, $(comp_name "${i}")"
+    done
+    printf "  %-22s: %s\n" "Cong cu" "WP-CLI${yn}"
     if [ "${MULTI_PHP}" == "y" ]; then
         printf "  %-22s: %s\n" "PHP" "${PHP_VERSION} (PHP 1), ${PHP_VERSION_2} (PHP 2)"
     else
@@ -615,10 +802,11 @@ run_wizard() {
         set_email
         input_ip
         option_change_ssh_port
+        wz_profile
         select_php_ver
         option_webserver
+        wz_components
         wz_swap
-        option_security
         option_telegram
         wz_summary
         case "${WZ_CHOICE}" in
@@ -636,6 +824,9 @@ run_wizard() {
 # Install LEMP Stack
 ############################################
 install_nginx() {
+    # saved for updates / rebuilds, changed later in the menu (LEMP -> Nginx -> Module Nginx)
+    # shellcheck disable=SC2086
+    nginx_modules_set ${NGX_MODULES}
     nginx_build "$(get_version nginx_version)" || fatal "Build Nginx that bai."
     nginx_install_service
     cd_dir "${DIR}"
@@ -674,72 +865,25 @@ install_php_2() {
     fi
 }
 
-install_phpmyadmin() {
-    if [ -f "${DEFAULT_DIR_TOOL}" ]; then
-        rm -rf "${DEFAULT_DIR_TOOL}"
-    fi
-    if [ ! -d "${DEFAULT_DIR_TOOL}" ]; then
-        mkdir -p "${DEFAULT_DIR_TOOL}"
-    fi
-    cd_dir "${DEFAULT_DIR_TOOL}"
-
-    rm -rf phpmyadmin
-    wget -qO- https://files.phpmyadmin.net/phpMyAdmin/"${PHPMYADMIN_VERSION}"/phpMyAdmin-"${PHPMYADMIN_VERSION}"-english.tar.gz | tar -xz
-    mv phpMyAdmin-"${PHPMYADMIN_VERSION}"-english phpmyadmin
-    rm -rf "${DEFAULT_DIR_TOOL}"/phpmyadmin/setup
-
-    BLOWFISH_SECRET=$(random_string 31)
-    mkdir -p "${DEFAULT_DIR_TOOL}"/phpmyadmin/tmp
-
-    cat >"${DEFAULT_DIR_TOOL}/phpmyadmin/config.inc.php" <<EOCONFIGINC
-<?php
-declare(strict_types=1);
-\$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';
-\$i = 0;
-\$i++;
-\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
-\$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['compress'] = false;
-\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
-\$cfg['UploadDir'] = '';
-\$cfg['SaveDir'] = '';
-\$cfg['PmaNoRelation_DisableWarning'] = true;
-\$cfg['VersionCheck'] = false;
-\$cfg['TempDir'] = '${DEFAULT_DIR_TOOL}/phpmyadmin/tmp';
-\$cfg['CaptchaLoginPublicKey'] = '';
-\$cfg['CaptchaLoginPrivateKey'] = '';
-\$cfg['ExecTimeLimit'] = 600;
-EOCONFIGINC
-
-    chown -R nginx:nginx "${DEFAULT_DIR_TOOL}"/phpmyadmin
-
-    # Configuration storage (creates the "phpmyadmin" database)
-    if [ -f "${DEFAULT_DIR_TOOL}/phpmyadmin/sql/create_tables.sql" ]; then
-        mysql -u root -p"${sql_root_pass}" <"${DEFAULT_DIR_TOOL}"/phpmyadmin/sql/create_tables.sql
-    fi
+# Optional tools chosen in the wizard (functions in menu/helpers/component).
+# A failure is reported at the end, the tool can be installed again from the menu.
+install_components() {
+    local c
+    COMPONENTS_FAILED=""
+    mkdir -p "${DEFAULT_DIR_TOOL}"
+    comp_wp_cli_install || COMPONENTS_FAILED="${COMPONENTS_FAILED} WP-CLI"
+    for c in ${COMPONENTS}; do
+        case "${c}" in
+        phpmyadmin) comp_phpmyadmin_install "${PHP_VERSION}" "${sql_root_pass}" ;;
+        opcache_dashboard) comp_opcache_dashboard_install ;;
+        composer) comp_composer_install ;;
+        rclone) comp_rclone_install ;;
+        # needs the final SSH port, installed with the other security settings
+        fail2ban) continue ;;
+        esac
+        comp_installed "${c}" || COMPONENTS_FAILED="${COMPONENTS_FAILED} $(comp_name "${c}")"
+    done
     cd_dir "${DIR}"
-}
-
-############################################
-# Install Composer
-############################################
-install_composer() {
-    cd_dir /opt
-    curl -sS https://getcomposer.org/installer | php
-    if [ -f composer.phar ]; then
-        mv composer.phar /usr/local/bin/composer
-        chmod +x /usr/local/bin/composer
-    fi
-    cd_dir "${DIR}"
-}
-
-############################################
-# Install WP-CLI
-############################################
-install_wp_cli() {
-    curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-    chmod +x wp-cli.phar
-    mv wp-cli.phar /usr/local/bin/wp
 }
 
 ############################################
@@ -818,6 +962,17 @@ php_memory_calculation() {
         PHP_REAL_PATH_LIMIT='8192k'
         PHP_REAL_PATH_TTL='86400'
         MAX_INPUT_VARS="10000"
+    fi
+
+    # Minimal: small Opcache (enough for a few WordPress sites), memory goes to MariaDB/PHP
+    OPCACHE_MAX_FILES=65407
+    if [ "${INSTALL_PROFILE}" == "minimal" ]; then
+        if [[ "${PHP_MEM}" -le '2097152' ]]; then
+            OPCACHE_MEM=64
+        elif [[ "${OPCACHE_MEM}" -gt 128 ]]; then
+            OPCACHE_MEM=128
+        fi
+        OPCACHE_MAX_FILES=16229
     fi
 }
 
@@ -1214,16 +1369,12 @@ http {
     # limit the number of requests for a given session
     limit_req_zone \$binary_remote_addr zone=req_limit_per_ip:10m rate=1r/s;
 
-    # Custom Response Headers
-    more_set_headers 'Server: HOSTVN.NET';
-    more_set_headers 'X-Content-Type-Options    "nosniff" always';
-    more_set_headers 'X-XSS-Protection          "1; mode=block" always';
-    more_set_headers 'Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always';
-    more_set_headers 'Referrer-Policy no-referrer-when-downgrade';
-
     # Custom Variables
     map \$scheme \$https_suffix { default ''; https '-https'; }
 
+    # Response headers and Brotli depend on the modules built into Nginx
+    # (written by nginx_modules_conf, hostvn -> LEMP -> Nginx -> Module Nginx)
+    include /etc/nginx/extra/headers.conf;
     include /etc/nginx/extra/nginx_cache.conf;
     include /etc/nginx/extra/gzip.conf;
     include /etc/nginx/extra/brotli.conf;
@@ -1559,53 +1710,6 @@ create_extra_conf() {
         mkdir -p /etc/nginx/extra
     fi
 
-    cat >> "/etc/nginx/extra/brotli.conf" << EOFBRCONF
-##Brotli Compression
-brotli on;
-brotli_static on;
-brotli_buffers 16 8k;
-brotli_comp_level 5;
-brotli_types
-    application/atom+xml
-    application/geo+json
-    application/javascript
-    application/json
-    application/ld+json
-    application/manifest+json
-    application/rdf+xml
-    application/rss+xml
-    application/vnd.ms-fontobject
-    application/wasm
-    application/x-font-opentype
-    application/x-font-truetype
-    application/x-font-ttf
-    application/x-javascript
-    application/x-web-app-manifest+json
-    application/xhtml+xml
-    application/xml
-    application/xml+rss
-    font/eot
-    font/opentype
-    font/otf
-    image/bmp
-    image/svg+xml
-    image/vnd.microsoft.icon
-    image/x-icon
-    image/x-win-bitmap
-    text/cache-manifest
-    text/calendar
-    text/css
-    text/javascript
-    text/markdown
-    text/plain
-    text/vcard
-    text/vnd.rim.location.xloc
-    text/vtt
-    text/x-component
-    text/x-cross-domain-policy
-    text/xml;
-EOFBRCONF
-
     cat >> "/etc/nginx/extra/nginx_cache.conf" << EOnginx_cache
 fastcgi_cache_key "\$scheme\$request_method\$host\$request_uri";
 fastcgi_cache_use_stale error timeout invalid_header http_500;
@@ -1810,7 +1914,6 @@ location = /favicon.ico { allow all; log_not_found off; access_log off; }
 location = /robots.txt { allow all; log_not_found off; access_log off; }
 location ~* \.(gif|jpg|jpeg|png|ico|webp)\$ {
     gzip_static off;
-    brotli_static off;
     #add_header Access-Control-Allow-Origin *;
     add_header Cache-Control "public, must-revalidate, proxy-revalidate, immutable, stale-while-revalidate=86400, stale-if-error=604800";
     access_log off;
@@ -1819,7 +1922,6 @@ location ~* \.(gif|jpg|jpeg|png|ico|webp)\$ {
 }
 location ~* \.(3gp|wmv|avi|asf|asx|mpg|mpeg|mp4|pls|mp3|mid|wav|swf|flv|exe|zip|tar|rar|gz|tgz|bz2|uha|7z|doc|docx|xls|xlsx|pdf|iso)\$ {
     gzip_static off;
-    brotli_static off;
     sendfile off;
     sendfile_max_chunk 1m;
     #add_header Access-Control-Allow-Origin *;
@@ -2490,7 +2592,7 @@ opcache.enable=1
 opcache.memory_consumption=${OPCACHE_MEM}
 opcache.interned_strings_buffer=8
 opcache.max_wasted_percentage=5
-opcache.max_accelerated_files=65407
+opcache.max_accelerated_files=${OPCACHE_MAX_FILES}
 opcache.revalidate_freq=${OPCACHE_REVALIDATE}
 opcache.fast_shutdown=0
 opcache.enable_cli=0
@@ -2522,7 +2624,7 @@ opcache.enable=1
 opcache.memory_consumption=${OPCACHE_MEM}
 opcache.interned_strings_buffer=8
 opcache.max_wasted_percentage=5
-opcache.max_accelerated_files=65407
+opcache.max_accelerated_files=${OPCACHE_MAX_FILES}
 opcache.revalidate_freq=${OPCACHE_REVALIDATE}
 opcache.fast_shutdown=0
 opcache.enable_cli=0
@@ -2781,106 +2883,13 @@ gen_htpasswd() {
 }
 
 ############################################
-# Opcache Dashboard
-############################################
-opcache_dashboard() {
-    mkdir -p "${DEFAULT_DIR_TOOL}"/opcache
-    wget -q "${GITHUB_RAW_LINK}"/amnuts/opcache-gui/master/index.php -O "${DEFAULT_DIR_TOOL}"/opcache/index.php
-    chown -R nginx:nginx "${DEFAULT_DIR_TOOL}"/opcache
-    chown -R nginx:nginx "${USR_DIR}"/nginx/auth
-}
-
-############################################
-# Rclone
-############################################
-install_rclone() {
-    curl -s https://rclone.org/install.sh | bash
-}
-
-install_wp_cli_packages() {
-    sed -i '/memory_limit/d' "$PHP1_INI_PATH"/00-hostvn-custom.ini
-    sed -i '/memory_limit/d' "$PHP1_CLI_PATH"/00-hostvn-custom.ini
-    echo "memory_limit = -1" >>"$PHP1_INI_PATH"/00-hostvn-custom.ini
-    echo "memory_limit = -1" >>"$PHP1_CLI_PATH"/00-hostvn-custom.ini
-
-    systemctl restart php"${PHP_VERSION}"-fpm
-
-    wp package install iandunn/wp-cli-rename-db-prefix --allow-root || true
-    wp package install trepmal/wp-revisions-cli --allow-root || true
-
-    sed -i '/memory_limit/d' "$PHP1_INI_PATH"/00-hostvn-custom.ini
-    sed -i '/memory_limit/d' "$PHP1_CLI_PATH"/00-hostvn-custom.ini
-    echo "memory_limit = ${MAX_MEMORY}M" >>"$PHP1_INI_PATH"/00-hostvn-custom.ini
-    echo "memory_limit = ${MAX_MEMORY}M" >>"$PHP1_CLI_PATH"/00-hostvn-custom.ini
-
-#    echo "allow_url_fopen = Off" >> "$PHP2_INI_PATH"/00-hostvn-custom.ini
-#    echo "allow_url_fopen = Off" >> "$PHP2_CLI_PATH"/00-hostvn-custom.ini
-#    echo "allow_url_fopen = Off" >> "$PHP1_INI_PATH"/00-hostvn-custom.ini
-#    echo "allow_url_fopen = Off" >> "$PHP1_CLI_PATH"/00-hostvn-custom.ini
-
-    systemctl restart php"${PHP_VERSION}"-fpm
-}
-
-############################################
 # Fail2ban
 ############################################
 install_fail2ban() {
-    if [ "${OS_FAMILY}" == "rhel" ]; then
-        pkg_install fail2ban || return 1
-        pkg_install_optional fail2ban-firewalld fail2ban-systemd
-    else
-        pkg_install fail2ban || return 1
-        pkg_install_optional python3-systemd
+    comp_selected fail2ban || return 0
+    if ! comp_fail2ban_install "${ADMIN_EMAIL}" "${RANDOM_ADMIN_PORT}" "${SSH_PORT}" "${WEBSERVER}"; then
+        COMPONENTS_FAILED="${COMPONENTS_FAILED} Fail2ban"
     fi
-
-    # The jail.conf shipped by the distribution is kept, only overrides are written.
-    cat >"/etc/fail2ban/jail.d/defaults.conf" <<END
-[DEFAULT]
-ignoreip   = 127.0.0.1/8 ::1
-findtime   = 600
-bantime    = 86400
-maxretry   = 5
-destemail  = ${ADMIN_EMAIL}
-sender     = ${ADMIN_EMAIL}
-sendername = Fail2ban
-END
-    if [ "${WEBSERVER}" == "apache" ]; then
-        cat >"/etc/fail2ban/jail.d/apache-auth.conf" <<END
-[apache-auth]
-enabled  = true
-filter   = apache-auth
-port     = ${RANDOM_ADMIN_PORT}
-logpath  = ${AP_LOG_DIR}/*error*log
-backend  = auto
-maxretry = 5
-bantime  = 86400
-END
-    else
-        cat >"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
-[nginx-http-auth]
-enabled  = true
-filter   = nginx-http-auth
-port     = ${RANDOM_ADMIN_PORT}
-logpath  = /var/log/nginx/error.log
-backend  = auto
-maxretry = 5
-bantime  = 86400
-END
-    fi
-    cat >"/etc/fail2ban/jail.d/sshd.local" <<END
-[sshd]
-enabled  = true
-filter   = sshd
-port     = ${SSH_PORT}
-backend  = systemd
-maxretry = 5
-bantime  = 86400
-END
-
-    mkdir -p /var/log/nginx
-    touch /var/log/nginx/error.log
-    systemctl enable fail2ban
-    systemctl restart fail2ban
 }
 
 ############################################
@@ -2952,6 +2961,7 @@ write_info() {
         echo "webserver=${WEBSERVER}"
         echo "lang=vi"
         echo "install_mode=${INSTALL_MODE}"
+        echo "install_profile=${INSTALL_PROFILE}"
     } >>"${FILE_INFO}"
 
     touch /etc/hostvn.lock
@@ -3278,6 +3288,8 @@ if [ "${WEBSERVER}" != "apache" ]; then
     #_create_mod_security_config
     create_wordpress_conf
     create_extra_conf
+    # brotli.conf / headers.conf for the modules that were built
+    nginx_modules_conf
     default_vhost
     vhost_custom
 fi
@@ -3293,17 +3305,12 @@ systemctl restart "$(php_service "${PHP_VERSION}")"
 [ "${WEBSERVER}" != "apache" ] && wp_rocket_nginx
 config_my_cnf
 
-install_phpmyadmin
-install_composer
-install_wp_cli
+install_components
 
 if [ "${INSTALL_MODE}" != "dev" ]; then
     install_acme
 fi
 gen_htpasswd
-opcache_dashboard
-install_rclone
-install_wp_cli_packages
 
 if [[ "$prompt_ssh" =~ ^([yY]) ]]; then
     change_ssh_port
@@ -3345,15 +3352,28 @@ printf "              Luu lai thong tin duoi day de truy cap SSH va phpMyAdmin  
 printf "                  ${RED}%s${NC}\n           \n" "De mo Menu su dung lenh:  hostvn"
 printf "==========================================================================\n"
 printf "Che do cai dat               : %s\n" "${INSTALL_MODE}"
+printf "Goi cai dat                  : %s\n" "${INSTALL_PROFILE}"
 printf "IP Server                    : %s\n" "${IPADDRESS}"
-printf "Web server                   : %s\n" "${WEBSERVER}"
+if [ "${WEBSERVER}" == "apache" ]; then
+    printf "Web server                   : %s\n" "apache"
+else
+    printf "Web server                   : %s\n" "nginx (module: ${NGX_MODULES:-khong co})"
+fi
 printf "SSH  Port                    : %s\n" "${SSH_PORT}"
 printf "PHP                          : %s %s\n" "${PHP_VERSION}" "${PHP_VERSION_2}"
-printf "phpMyAdmin                   : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/phpmyadmin"
-printf "Link Opcache Dashboard       : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/opcache"
-echo "User phpMyAdmin va Admin Tool: admin                                   "
+if comp_installed phpmyadmin; then
+    printf "phpMyAdmin                   : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/phpmyadmin"
+fi
+if comp_installed opcache_dashboard; then
+    printf "Link Opcache Dashboard       : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/opcache"
+fi
+echo "User Database va Admin Tool  : admin                                   "
 printf "Password Admin tool          : %s\n" "${ADMIN_TOOL_PWD}"
-printf "Password phpMyAdmin          : %s\n" "${sql_admin_pass}"
+printf "Password Database (admin)    : %s\n" "${sql_admin_pass}"
+if [ -n "${COMPONENTS_FAILED}" ]; then
+    printf "${RED}Cai dat that bai             : %s (cai lai trong menu hostvn)${NC}\n" "${COMPONENTS_FAILED# }"
+fi
+printf "Them thanh phan sau          : %s\n" "hostvn -> LEMP -> Nginx -> Module Nginx; Admin Tool; Firewall"
 printf "CrowdSec                     : %s\n" "${CROWDSEC_STATUS}"
 printf "AppSec (WAF)                 : %s\n" "${APPSEC_STATUS}"
 printf "Access log                   : %s\n" "${ACCESS_LOG_STATUS}"

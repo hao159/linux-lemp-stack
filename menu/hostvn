@@ -26,7 +26,9 @@ printf "%s          %s Scripts - VPS Manager Scripts        %s\n" "${GREEN}" "${
 printf "%s             %s - Version %s             %s\n" "${GREEN}" "${AUTHOR_WEB}" "${script_version}" "${NC}"
 printf "%s==================================================%s\n" "${GREEN}" "${NC}"
 printf "%sIP VPS: %s - OS: %s %s - Mode: %s%s\n" "${GREEN}" "${IPADDRESS}" "${OS_ID}" "${OS_VERSION_ID}" "${install_mode}" "${NC}"
-printf "%sphpMyAdmin: %s%s\n" "${RED}" "http://${IPADDRESS}:${admin_port}/phpmyadmin" "${NC}"
+if comp_installed phpmyadmin; then
+    printf "%sphpMyAdmin: %s%s\n" "${RED}" "http://${IPADDRESS}:${admin_port}/phpmyadmin" "${NC}"
+fi
 printf "%s==================================================%s\n" "${GREEN}" "${NC}"
 # Written by the daily check (menu/cronjob/update_check)
 if [ -s /var/hostvn/update/pending ]; then

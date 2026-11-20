@@ -128,6 +128,12 @@ _confirm_disable_cache() {
 
 _enable_cache() {
     if [ -d "/home/${user}/${domain}/public_html/wp-content/plugins/woocommerce" ]; then
+        # The WooCommerce cache removes Set-Cookie from cached pages (more_clear_headers):
+        # without the module a session cookie could be cached and served to everybody.
+        if ! nginx_has_module headers_more; then
+            ALERT=$(printf "%s\n" "${RED}Cache WooCommerce can module Headers-More. Bat trong: LEMP -> Nginx -> Module Nginx.${NC}")
+            return 1
+        fi
         if [ ! -f "${NGINX_CONF_DIR}/php/${domain}/php_cache_woo.conf" ]; then
             if [ -f "${CUSTOM_DIR}/php_cache_woo.conf" ]; then
                 cp "${CUSTOM_DIR}"/php_cache_woo.conf "${NGINX_CONF_DIR}"/php/"${domain}"/php_cache_woo.conf

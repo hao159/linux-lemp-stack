@@ -193,6 +193,11 @@ lemp_apache(){
     . /var/hostvn/menu/route/lemp_apache
 }
 
+# Add / remove the optional Nginx modules (Nginx is built again)
+nginx_modules_menu(){
+    . /var/hostvn/menu/controller/nginx/modules
+}
+
 # apache_backend <enable|disable|remove> : Apache behind Nginx for one website
 apache_backend(){
     AP_ACTION="$1"
@@ -430,6 +435,13 @@ connect_google_drive(){
 }
 
 connect_onedrive(){
+    # the OneDrive backups are uploaded with rclone
+    if ! comp_ensure rclone; then
+        clear
+        printf "%s\n" "${RED}Can Rclone de backup len OneDrive.${NC}"
+        menu_backup
+        return
+    fi
     . /var/hostvn/menu/controller/backup/connect_ondrive
 }
 

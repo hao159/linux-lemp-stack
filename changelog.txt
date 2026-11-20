@@ -1,3 +1,14 @@
+v1.3.0
+
+- Added: installer profiles Minimal (low-end VPS: plain Nginx, PHP-FPM, MariaDB, SSL, small Opcache) and Advanced (full set), followed by a checklist to switch every optional component on or off
+- Added: Nginx third party modules are optional (Brotli, Headers-More, Lua, VTS, Cache Purge); only the chosen ones are downloaded and built, the list is kept for updates and rebuilds (/var/hostvn/nginx_modules)
+- Added: menu LEMP -> Nginx -> Module Nginx to add or remove modules (rebuild with rollback, a module in use can not be removed)
+- Added: phpMyAdmin, Opcache Dashboard, Composer, Rclone, Fail2ban are optional; installed later from Admin Tool / Firewall, or on first use (Laravel, Google Drive / OneDrive)
+- Changed: CrowdSec / AppSec are in the component checklist, off by default; AppSec switches on CrowdSec and the Lua module
+- Changed: WP-CLI packages are installed the first time they are used instead of during the installation
+- Changed: response headers moved to /etc/nginx/extra/headers.conf (headers-more, or add_header without the module); Brotli config written for the modules really built
+- Fixed: security headers set with headers-more had a wrong syntax (the value contained the quotes and "always")
+
 v1.2.0
 
 - Added: menu 14 "Cap nhat & canh bao": check and update Nginx, PHP, MariaDB, CrowdSec, OS packages, Scripts

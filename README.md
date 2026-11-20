@@ -22,13 +22,21 @@ Script viết bằng shell dùng để cài đặt và quản lý LEMP Stack (Ng
 
 ## 2. Phần mềm được cài
 
-- **Nginx** (bản stable, build từ source để mọi hệ điều hành có cùng module): Brotli, headers-more, cache purge, VTS, FastCGI cache, Lua (LuaJIT).
+Lúc cài chọn gói **Minimal** hoặc **Advanced**, sau đó bật/tắt từng thành phần tuỳ chọn — xem [mục 3.7](#37-gói-minimal--advanced-và-thành-phần-tuỳ-chọn). Không có gì ngoài phần lõi bị cài nếu bạn không chọn.
+
+Phần lõi (luôn cài):
+
+- **Nginx** (bản stable, build từ source để mọi hệ điều hành có cùng binary), FastCGI cache có sẵn trong Nginx.
 - Hoặc **Apache** 2.4 (event MPM + PHP-FPM) thay cho Nginx, hoặc chạy phía sau Nginx — xem [mục 3.6](#36-chọn-web-server-nginx-hoặc-apache).
-- **PHP**: 8.5, 8.4, 8.3, 8.2, 8.1, 8.0, 7.4 — chạy song song hai phiên bản, đổi phiên bản qua menu.
-- **MariaDB** 11.8 LTS, **phpMyAdmin** 5.2.
-- WP-CLI, Composer, Rclone, acme.sh (Let's Encrypt), Fail2ban, Opcache Dashboard.
-- Tuỳ chọn qua menu: Redis, Memcached, Node.js, ClamAV/ImunifyAV, ionCube.
-- Tuỳ chọn lúc cài hoặc thêm sau qua menu: **CrowdSec**, **AppSec (WAF)**, thông báo **Telegram** — xem [mục 3.3](#33-crowdsec-appsec-và-telegram).
+- **PHP-FPM**: 8.5, 8.4, 8.3, 8.2, 8.1, 8.0, 7.4 — có thể chạy song song hai phiên bản, đổi phiên bản qua menu. Opcache bật sẵn.
+- **MariaDB** 11.8 LTS, acme.sh (SSL Let's Encrypt), WP-CLI.
+
+Thành phần tuỳ chọn (chọn lúc cài hoặc thêm sau qua menu):
+
+- Module Nginx: **Brotli**, **Headers-More**, **Lua** (LuaJIT, cần cho AppSec), **VTS**, **Cache Purge**.
+- Công cụ: **phpMyAdmin** 5.2, **Opcache Dashboard**, **Composer**, **Rclone**, **Fail2ban**.
+- Bảo mật: **CrowdSec**, **AppSec (WAF)**, thông báo **Telegram** — xem [mục 3.3](#33-crowdsec-appsec-và-telegram).
+- Chỉ qua menu: Redis, Memcached, Node.js, ClamAV/ImunifyAV, ionCube.
 
 Phiên bản các phần mềm nằm trong file [`version`](version) — chỉ cần sửa file này để nâng cấp.
 
@@ -52,11 +60,12 @@ Không cần tham số dòng lệnh: trình cài đặt là một wizard hỏi l
 2. Email quản trị.
 3. Địa chỉ IP của server (tự dò, Enter để dùng).
 4. Port SSH (chỉ ở chế độ Production).
-5. Phiên bản PHP, có cài thêm phiên bản PHP thứ hai không.
-6. Web server: Nginx hoặc Apache — xem [mục 3.6](#36-chọn-web-server-nginx-hoặc-apache).
-7. Swap (chỉ hỏi khi VPS chưa có swap).
-8. CrowdSec & AppSec — xem [mục 3.3](#33-crowdsec-appsec-và-telegram).
-9. Thông báo Telegram.
+5. Gói cài đặt: **Minimal** (VPS cấu hình thấp) hoặc **Advanced** — xem [mục 3.7](#37-gói-minimal--advanced-và-thành-phần-tuỳ-chọn).
+6. Phiên bản PHP; gói Advanced hỏi thêm có cài phiên bản PHP thứ hai không.
+7. Web server: Nginx hoặc Apache — xem [mục 3.6](#36-chọn-web-server-nginx-hoặc-apache).
+8. Thành phần tuỳ chọn: danh sách có đánh dấu `[x]`, nhập số để bật/tắt từng mục (module Nginx, phpMyAdmin, Composer, Rclone, Fail2ban, CrowdSec, AppSec...).
+9. Swap (chỉ hỏi khi VPS chưa có swap).
+10. Thông báo Telegram.
 
 Cuối cùng là màn hình tóm tắt để chọn **Bắt đầu cài đặt**, **Chọn lại từ đầu** hoặc **Huỷ**. Chưa có gì được cài lên server cho tới khi bạn xác nhận; sau đó quá trình cài chạy tự động, không hỏi thêm.
 
@@ -75,7 +84,7 @@ Log cài đặt: `/opt/install.txt`. Thông tin đăng nhập: `/var/hostvn/.hos
 
 ### 3.3. CrowdSec, AppSec và Telegram
 
-Wizard cài đặt hỏi ba tuỳ chọn, trả lời `n` thì bỏ qua và bật sau trong menu `hostvn`:
+CrowdSec và AppSec nằm trong danh sách thành phần tuỳ chọn của wizard (mặc định tắt ở cả hai gói), Telegram là một bước riêng. Bỏ qua thì bật sau trong menu `hostvn`:
 
 | Tuỳ chọn | Tác dụng | Bật sau khi đã cài |
 | --- | --- | --- |
@@ -87,8 +96,8 @@ Server cài bằng phiên bản cũ: chạy `hostvn` → **Cập nhật Scripts*
 
 Lưu ý:
 
-- Nginx được build kèm Lua (LuaJIT + lua-nginx-module). AppSec dùng bouncer Lua chính thức của CrowdSec nên kiểm tra được URI, header và cả body của request.
-- Server cài từ bản 1.0.0 có Nginx chưa kèm Lua: khi bật AppSec, menu sẽ hỏi và build lại Nginx cùng phiên bản (mất vài phút, Nginx khởi động lại một lần).
+- AppSec cần module Lua của Nginx (LuaJIT + lua-nginx-module): chọn AppSec trong wizard thì CrowdSec và Lua được bật theo. AppSec dùng bouncer Lua chính thức của CrowdSec nên kiểm tra được URI, header và cả body của request.
+- Nginx chưa có Lua (cài không chọn Lua, hoặc cài từ bản 1.0.0): khi bật AppSec, menu sẽ hỏi và build lại Nginx cùng phiên bản kèm Lua (mất vài phút, Nginx khởi động lại một lần).
 - Server dùng Apache cài được CrowdSec (đọc log Apache), nhưng không có AppSec.
 - Cài CrowdSec sẽ bật access log của Nginx tại `/var/log/nginx/access/access.log` (CrowdSec cần log này để phát hiện scan). Log được rotate hằng ngày và nén; số ngày giữ log (7/14/30 hoặc tự nhập) chọn lúc cài, đổi lại ở Firewall → CrowdSec & AppSec → Thay đổi thời gian giữ access log. Gỡ CrowdSec thì access log tắt lại.
 - Khi CrowdSec dừng hoặc khởi động lại, Nginx cho request đi qua (fail-open), website không bị gián đoạn.
@@ -163,6 +172,31 @@ Không có ở chế độ Apache (menu sẽ báo rõ): AppSec (WAF) vì CrowdSe
 
 Thư mục `/etc/nginx/ssl` (chứng chỉ) và `/usr/share/nginx` (trang mặc định, công cụ quản trị), cùng tài khoản hệ thống `nginx`, vẫn được dùng ở chế độ Apache để menu dùng chung đường dẫn.
 
+### 3.7. Gói Minimal / Advanced và thành phần tuỳ chọn
+
+VPS cấu hình thấp không nên chạy những thứ không dùng tới. Wizard cho chọn gói, rồi hiện danh sách để bạn bật/tắt từng thành phần theo ý:
+
+✔ = luôn cài · ☑ = chọn sẵn (bỏ được) · ☐ = tuỳ chọn, để trống (bật được ngay trong wizard)
+
+| Thành phần | Minimal | Advanced | Thêm sau trong menu |
+| --- | :---: | :---: | --- |
+| Nginx (không module ngoài), PHP-FPM, MariaDB, SSL, Opcache, WP-CLI | ✔ | ✔ | — (luôn cài) |
+| Giới hạn Opcache | 64 MB, 16k file (≤ 2GB RAM), tối đa 128 MB | theo RAM, 65k file | — |
+| PHP thứ hai | — | hỏi | LEMP → PHP → Cài PHP 2 |
+| Brotli, Headers-More, VTS, Cache Purge (module Nginx) | ☐ | ☑ | LEMP → Nginx → Module Nginx |
+| Lua (module Nginx) | ☐ | ☐ | LEMP → Nginx → Module Nginx (hoặc tự build khi bật AppSec) |
+| phpMyAdmin, Opcache Dashboard | ☐ | ☑ | Admin Tool → Cài đặt phpMyAdmin / Opcache Panel |
+| Composer | ☐ | ☑ | Tự cài khi tạo website Laravel |
+| Rclone | ☐ | ☑ | Tự hỏi cài khi kết nối Google Drive / OneDrive |
+| Fail2ban | ☐ | ☑ | Firewall → Cài đặt Fail2ban |
+| CrowdSec, AppSec (WAF) | ☐ | ☐ | Firewall → CrowdSec & AppSec |
+
+- Gói mặc định: Minimal khi VPS dưới 4GB RAM, Advanced từ 4GB trở lên. Hai gói hiện cùng một danh sách, chỉ khác mục nào được chọn sẵn: ví dụ chọn Minimal rồi bật thêm phpMyAdmin và Fail2ban ở bước **Thành phần tuỳ chọn**.
+- **Module Nginx**: chỉ module được chọn mới được tải và build, nên gói Minimal build nhanh hơn nhiều (không LuaJIT, không Brotli). Danh sách lưu ở `/var/hostvn/nginx_modules`; cập nhật hoặc rebuild Nginx giữ nguyên danh sách. Đổi module: LEMP → Nginx → **Module Nginx** — Nginx được build lại cùng phiên bản, lỗi thì tự khôi phục bản cũ.
+- Không có Headers-More: header bảo mật dùng `add_header` của Nginx, header `Server` hiện là `nginx`. FastCGI cache cho WooCommerce cần Headers-More (để xoá `Set-Cookie` khỏi trang cache), menu sẽ báo nếu chưa có.
+- Menu không cho bỏ module đang được dùng (Lua khi AppSec đang bật, Headers-More khi có website dùng cache WooCommerce).
+- Server cài từ bản cũ không có `/var/hostvn/nginx_modules` nên được coi là có đủ module, không có gì thay đổi khi cập nhật.
+
 ## 4. Tạo website chạy bằng IP:PORT
 
 `hostvn` → **1. Quản lý Domain** → **2. Thêm domain** → chọn **IP:PORT**.
@@ -186,7 +220,8 @@ Website IP:PORT dùng được các chức năng: xoá, đổi phiên bản PHP,
 install              Kiểm tra hệ thống, tải source, gọi bộ cài
 hostvn               Bộ cài LEMP Stack
 version              Phiên bản các phần mềm + phiên bản script
-menu/helpers/os      Lớp trừu tượng hệ điều hành (apt/dnf, ufw/firewalld, PHP, MariaDB, build Nginx)
+menu/helpers/os      Lớp trừu tượng hệ điều hành (apt/dnf, ufw/firewalld, PHP, MariaDB, build Nginx + module)
+menu/helpers/component  Thành phần tuỳ chọn (phpMyAdmin, Composer, Rclone, Fail2ban...) dùng chung cho bộ cài và menu
 menu/                Menu quản lý (cài vào /var/hostvn/menu, lệnh: hostvn)
 ```
 
@@ -211,7 +246,7 @@ REPO_SLUG=ten-ban/linux-lemp-stack REPO_BRANCH=master ./install
 - **Domain**: thêm/xoá/đổi domain, alias, redirect, clone, đổi phiên bản PHP, bảo vệ thư mục, website IP:PORT.
 - **SSL**: Let's Encrypt (kèm CloudFlare DNS API), SSL trả phí.
 - **Cache**: Nginx FastCGI cache, Redis, Memcached, Opcache.
-- **LEMP**: quản lý Nginx (update/rebuild), PHP (đổi phiên bản, PHP thứ hai, ionCube, thông số, cài extension), MariaDB, log.
+- **LEMP**: quản lý Nginx (update/rebuild, thêm/bỏ module), PHP (đổi phiên bản, PHP thứ hai, ionCube, thông số, cài extension), MariaDB, log.
 - **Firewall**: mở port, block/unblock IP (ufw hoặc firewalld + Fail2ban), CrowdSec & AppSec (WAF).
 - **WordPress**: cài tự động, cập nhật, tối ưu database, bảo mật, cấu hình plugin cache/SEO.
 - **Backup**: local, Google Drive, OneDrive (Rclone), cronjob tự động.

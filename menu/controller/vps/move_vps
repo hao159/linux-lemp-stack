@@ -111,7 +111,7 @@ _create_sftp_connect() {
                 encrypt_pwd=$(rclone obscure "${ssh_pwd}" --crypt-password string)
 
                 if [[ -n "${new_vps_ip}" && -n "${ssh_port}" && -n "${ssh_pwd}" ]]; then
-                    rclone config create "${remote_name}" sftp host "${new_vps_ip}" user root port "${ssh_port}" pass "${encrypt_pwd}"
+                    comp_ensure rclone && rclone config create "${remote_name}" sftp host "${new_vps_ip}" user root port "${ssh_port}" pass "${encrypt_pwd}"
                 fi
             fi
         fi

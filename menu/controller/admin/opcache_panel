@@ -14,12 +14,15 @@ source /var/hostvn/menu/validate/rule
 source /var/hostvn/menu/helpers/function
 
 _update(){
-    _cd_dir "${DEFAULT_DIR_TOOL}"/opcache
-    rm -rf ./*
-    wget -q https://raw.githubusercontent.com/amnuts/opcache-gui/master/index.php -O  "${DEFAULT_DIR_TOOL}"/opcache/index.php &> /dev/null
-    chown -R nginx:nginx "${DEFAULT_DIR_TOOL}"/opcache
-    clear
-    printf "%s\n" "${GREEN}Update Opcache Dashboard success.${NC}"
+    # also installs it when the installation left it out (Minimal)
+    rm -rf "${DEFAULT_DIR_TOOL:?}"/opcache
+    if comp_opcache_dashboard_install >/dev/null 2>&1; then
+        clear
+        printf "%s\n" "${GREEN}Cai dat / Update Opcache Dashboard thanh cong: http://${IPADDRESS}:${admin_port}/opcache${NC}"
+    else
+        clear
+        printf "%s\n" "${RED}Khong tai duoc Opcache Dashboard tu GitHub.${NC}"
+    fi
 }
 
 _update

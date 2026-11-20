@@ -27,6 +27,9 @@ do
     printf "${GREEN}%s${NC}\n" "6. Disable Firewall"
     printf "${GREEN}%s${NC}\n" "7. Enable Firewall"
     printf "${GREEN}%s${NC}\n" "8. CrowdSec & AppSec (WAF)"
+    if ! comp_installed fail2ban; then
+        printf "${GREEN}%s${NC}\n" "9. Cai dat Fail2ban (chan do mat khau SSH / Admin tool)"
+    fi
     #printf "${GREEN}%s${NC}\n" "8. Block country"
     printf "%s ============================%s\n" "${GREEN}" "${NC}"
     read -r -p " ${SELECT_OPTION} " CHOICE
@@ -53,14 +56,20 @@ do
             clear
             printf "%s\n" "${RED}${lang_blocked_ip_list}${NC}"
             printf "\n"
-            fail2ban-client status | grep "Jail list:" | sed "s/ //g" | awk '{split($2,a,",");for(i in a) system("fail2ban-client status " a[i])}' | grep "Status\|IP list"
+            if comp_installed fail2ban; then
+                fail2ban-client status | grep "Jail list:" | sed "s/ //g" | awk '{split($2,a,",");for(i in a) system("fail2ban-client status " a[i])}' | grep "Status\|IP list"
+            else
+                printf "%s\n" "Fail2ban chua duoc cai dat (chon 9)."
+            fi
             printf "\n"
             menu_firewall
             ;;
         3)
             read -r -p "${lang_enter_ip}: " ip
-            fail2ban-client set sshd banip "${ip}"
-            fail2ban-client set nginx-http-auth banip "${ip}"
+            if comp_installed fail2ban; then
+                fail2ban-client set sshd banip "${ip}"
+                fail2ban-client set nginx-http-auth banip "${ip}"
+            fi
             fw_block_ip "${ip}"
             clear
             printf "%s\n" "${GREEN}${lang_block_ip_success}.${NC}"
@@ -69,8 +78,10 @@ do
             ;;
         4)
             read -r -p "${lang_enter_ip}: " ip
-            fail2ban-client set sshd unbanip "${ip}"
-            fail2ban-client set nginx-http-auth unbanip "${ip}"
+            if comp_installed fail2ban; then
+                fail2ban-client set sshd unbanip "${ip}"
+                fail2ban-client set nginx-http-auth unbanip "${ip}"
+            fi
             fw_unblock_ip "${ip}"
             clear
             printf "%s\n" "${GREEN}${lang_unblock_ip_success}.${NC}"
@@ -87,7 +98,7 @@ do
 #            ;;
         5)
             fw_reload
-            systemctl restart fail2ban
+            comp_installed fail2ban && systemctl restart fail2ban
             clear
             printf "%s\n" "${GREEN}${lang_restart_firewall_success}.${NC}"
             echo ""
@@ -95,8 +106,10 @@ do
             ;;
         6)
             fw_disable
-            systemctl stop fail2ban
-            systemctl disable fail2ban
+            if comp_installed fail2ban; then
+                systemctl stop fail2ban
+                systemctl disable fail2ban
+            fi
             clear
             printf "%s\n" "${GREEN}${lang_stop_firewall_success}.${NC}"
             echo ""
@@ -108,8 +121,10 @@ do
             fw_allow_port 80
             fw_allow_port 443
             fw_allow_port "${admin_port}"
-            systemctl restart fail2ban
-            systemctl enable fail2ban
+            if comp_installed fail2ban; then
+                systemctl restart fail2ban
+                systemctl enable fail2ban
+            fi
             clear
             printf "%s\n" "${GREEN}Bat Firewall thanh cong.${NC}"
             echo ""
@@ -121,6 +136,22 @@ do
 #            menu_firewall
 #            ;;
         8) clear; menu_crowdsec ;;
+        9)
+            clear
+            if comp_installed fail2ban; then
+                printf "%s\n" "${RED}${WRONG_OPTION}${NC}"
+            else
+                printf "%s\n" "${GREEN}Dang cai dat Fail2ban...${NC}"
+                if comp_install fail2ban >/dev/null 2>&1; then
+                    clear
+                    printf "%s\n" "${GREEN}Cai dat Fail2ban thanh cong.${NC}"
+                else
+                    clear
+                    printf "%s\n" "${RED}Cai dat Fail2ban that bai.${NC}"
+                fi
+            fi
+            menu_firewall
+            ;;
         0) clear; menu_primary ;;
         *) clear; printf "%s\n"  "${RED}${WRONG_OPTION}${NC}";;
     esac

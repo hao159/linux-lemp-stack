@@ -1,0 +1,245 @@
+#!/bin/bash
+
+######################################################################
+#   Optional components - shared by the installer and the menu       #
+#                                                                    #
+#  phpMyAdmin, Opcache Dashboard, Composer, Rclone, Fail2ban and     #
+#  the WP-CLI packages are not needed to serve websites. A Minimal   #
+#  installation leaves them out; they are installed later from the   #
+#  menu, or the first time a screen of the menu needs one of them.   #
+#                                                                    #
+#  Requires menu/helpers/os loaded (pkg_install, get_version ...)    #
+######################################################################
+
+COMP_TOOL_DIR="/usr/share/nginx/private"
+
+############################################
+# State
+############################################
+comp_installed() {
+    case "$1" in
+    phpmyadmin) [ -f "${COMP_TOOL_DIR}/phpmyadmin/index.php" ] ;;
+    opcache_dashboard) [ -f "${COMP_TOOL_DIR}/opcache/index.php" ] ;;
+    composer) command -v composer >/dev/null 2>&1 ;;
+    rclone) command -v rclone >/dev/null 2>&1 ;;
+    fail2ban) command -v fail2ban-client >/dev/null 2>&1 ;;
+    wp_cli) command -v wp >/dev/null 2>&1 ;;
+    *) return 1 ;;
+    esac
+}
+
+comp_name() {
+    case "$1" in
+    phpmyadmin) echo "phpMyAdmin" ;;
+    opcache_dashboard) echo "Opcache Dashboard" ;;
+    composer) echo "Composer" ;;
+    rclone) echo "Rclone" ;;
+    fail2ban) echo "Fail2ban" ;;
+    *) echo "$1" ;;
+    esac
+}
+
+comp_label() {
+    case "$1" in
+    phpmyadmin) echo "phpMyAdmin - quan ly database qua trinh duyet" ;;
+    opcache_dashboard) echo "Opcache Dashboard - xem trang thai Opcache" ;;
+    composer) echo "Composer - can khi tao website Laravel" ;;
+    rclone) echo "Rclone - backup len Google Drive / OneDrive" ;;
+    fail2ban) echo "Fail2ban - chan do mat khau SSH / Admin tool (ton RAM)" ;;
+    *) echo "$1" ;;
+    esac
+}
+
+# comp_ensure <component> : install it after asking, when a screen needs it.
+# Returns 1 when it is missing and the administrator refused, or the installation failed.
+comp_ensure() {
+    local answer
+    comp_installed "$1" && return 0
+    printf "%s\n" "${RED:-}Chuc nang nay can: $(comp_label "$1")${NC:-}"
+    read -r -p "Ban co muon cai dat ngay khong ? (y/n) " answer
+    [[ "${answer}" =~ ^([yY])$ ]] || return 1
+    comp_install "$1"
+}
+
+# comp_install <component> : for the menu (the installer calls the functions directly)
+comp_install() {
+    local info="/var/hostvn/.hostvn.conf" v
+    _comp_info() { grep -w "^$1" "${info}" 2>/dev/null | cut -f2 -d'='; }
+    case "$1" in
+    phpmyadmin) comp_phpmyadmin_install "$(_comp_info php1_version)" ;;
+    opcache_dashboard) comp_opcache_dashboard_install ;;
+    composer) comp_composer_install ;;
+    rclone) comp_rclone_install ;;
+    fail2ban)
+        comp_fail2ban_install "$(_comp_info admin_email)" "$(_comp_info admin_port)" \
+            "$(_comp_info ssh_port)" "$(_comp_info webserver)"
+        ;;
+    *) return 1 ;;
+    esac
+    v=$?
+    comp_installed "$1" && return 0
+    return "${v}"
+}
+
+############################################
+# phpMyAdmin
+############################################
+# comp_phpmyadmin_install [php version] [mysql root password]
+# The configuration storage database is created when the password is given (installer).
+comp_phpmyadmin_install() {
+    local ver secret declare="" php_ver="$1" root_pass="$2"
+    ver=$(get_version phpmyadmin_version)
+    [ -n "${ver}" ] || return 1
+    [ -f "${COMP_TOOL_DIR}" ] && rm -f "${COMP_TOOL_DIR}"
+    mkdir -p "${COMP_TOOL_DIR}"
+
+    rm -rf "${COMP_TOOL_DIR}/phpmyadmin" "${COMP_TOOL_DIR}/phpMyAdmin-${ver}-english"
+    wget -qO- "https://files.phpmyadmin.net/phpMyAdmin/${ver}/phpMyAdmin-${ver}-english.tar.gz" |
+        tar -xz -C "${COMP_TOOL_DIR}" || return 1
+    mv "${COMP_TOOL_DIR}/phpMyAdmin-${ver}-english" "${COMP_TOOL_DIR}/phpmyadmin" || return 1
+    rm -rf "${COMP_TOOL_DIR}/phpmyadmin/setup"
+    mkdir -p "${COMP_TOOL_DIR}/phpmyadmin/tmp"
+
+    secret=$(head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 32)
+    [ "${php_ver}" != "5.6" ] && declare="declare(strict_types=1);"
+    cat >"${COMP_TOOL_DIR}/phpmyadmin/config.inc.php" <<EOCONFIGINC
+<?php
+${declare}
+\$cfg['blowfish_secret'] = '${secret}';
+\$i = 0;
+\$i++;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+\$cfg['UploadDir'] = '';
+\$cfg['SaveDir'] = '';
+\$cfg['PmaNoRelation_DisableWarning'] = true;
+\$cfg['VersionCheck'] = false;
+\$cfg['TempDir'] = '${COMP_TOOL_DIR}/phpmyadmin/tmp';
+\$cfg['CaptchaLoginPublicKey'] = '';
+\$cfg['CaptchaLoginPrivateKey'] = '';
+\$cfg['ExecTimeLimit'] = 600;
+EOCONFIGINC
+    chown -R nginx:nginx "${COMP_TOOL_DIR}/phpmyadmin"
+
+    if [ -n "${root_pass}" ] && [ -f "${COMP_TOOL_DIR}/phpmyadmin/sql/create_tables.sql" ]; then
+        mysql -u root -p"${root_pass}" <"${COMP_TOOL_DIR}/phpmyadmin/sql/create_tables.sql"
+    fi
+    return 0
+}
+
+############################################
+# Opcache Dashboard
+############################################
+comp_opcache_dashboard_install() {
+    mkdir -p "${COMP_TOOL_DIR}/opcache"
+    wget -q "https://raw.githubusercontent.com/amnuts/opcache-gui/master/index.php" \
+        -O "${COMP_TOOL_DIR}/opcache/index.php" || return 1
+    chown -R nginx:nginx "${COMP_TOOL_DIR}/opcache"
+}
+
+############################################
+# Composer
+############################################
+comp_composer_install() {
+    local tmp
+    tmp=$(mktemp -d)
+    (cd "${tmp}" && curl -sS https://getcomposer.org/installer | php) || {
+        rm -rf "${tmp}"
+        return 1
+    }
+    if [ -f "${tmp}/composer.phar" ]; then
+        mv "${tmp}/composer.phar" /usr/local/bin/composer
+        chmod +x /usr/local/bin/composer
+    fi
+    rm -rf "${tmp}"
+    comp_installed composer
+}
+
+############################################
+# WP-CLI (always installed: the WordPress screens use it)
+############################################
+comp_wp_cli_install() {
+    curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp &&
+        chmod +x /usr/local/bin/wp
+}
+
+# comp_wp_package <package> <command> : WP-CLI package installed the first time it is used
+comp_wp_package() {
+    wp help "$2" --allow-root >/dev/null 2>&1 && return 0
+    printf "%s\n" "Dang cai dat WP-CLI package $1 ..."
+    php -d memory_limit=-1 "$(command -v wp)" package install "$1" --allow-root
+}
+
+############################################
+# Rclone
+############################################
+comp_rclone_install() {
+    curl -s https://rclone.org/install.sh | bash
+    comp_installed rclone
+}
+
+############################################
+# Fail2ban
+############################################
+# comp_fail2ban_install <admin email> <admin port> <ssh port> <nginx|apache>
+comp_fail2ban_install() {
+    local email="$1" admin_port="$2" ssh_port="${3:-22}" ws="$4"
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        pkg_install fail2ban || return 1
+        pkg_install_optional fail2ban-firewalld fail2ban-systemd
+    else
+        pkg_install fail2ban || return 1
+        pkg_install_optional python3-systemd
+    fi
+
+    # The jail.conf shipped by the distribution is kept, only overrides are written.
+    cat >"/etc/fail2ban/jail.d/defaults.conf" <<END
+[DEFAULT]
+ignoreip   = 127.0.0.1/8 ::1
+findtime   = 600
+bantime    = 86400
+maxretry   = 5
+destemail  = ${email}
+sender     = ${email}
+sendername = Fail2ban
+END
+    if [ "${ws}" == "apache" ]; then
+        cat >"/etc/fail2ban/jail.d/apache-auth.conf" <<END
+[apache-auth]
+enabled  = true
+filter   = apache-auth
+port     = ${admin_port}
+logpath  = ${AP_LOG_DIR}/*error*log
+backend  = auto
+maxretry = 5
+bantime  = 86400
+END
+    else
+        cat >"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
+[nginx-http-auth]
+enabled  = true
+filter   = nginx-http-auth
+port     = ${admin_port}
+logpath  = /var/log/nginx/error.log
+backend  = auto
+maxretry = 5
+bantime  = 86400
+END
+    fi
+    cat >"/etc/fail2ban/jail.d/sshd.local" <<END
+[sshd]
+enabled  = true
+filter   = sshd
+port     = ${ssh_port}
+backend  = systemd
+maxretry = 5
+bantime  = 86400
+END
+
+    mkdir -p /var/log/nginx
+    touch /var/log/nginx/error.log
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+}

@@ -78,13 +78,17 @@ upd_nginx_latest() {
 
 _upd_nginx_restore() {
     [ -f "${UPD_NGINX_BAK}" ] || return 1
-    cmp -s "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}" && return 0
-    # rename instead of overwrite: the binary is running
-    cp -p "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}.hostvn.new" &&
-        mv -f "${UPD_NGINX_BIN}.hostvn.new" "${UPD_NGINX_BIN}"
+    if ! cmp -s "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}"; then
+        # rename instead of overwrite: the binary is running
+        cp -p "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}.hostvn.new" &&
+            mv -f "${UPD_NGINX_BIN}.hostvn.new" "${UPD_NGINX_BIN}" || return 1
+    fi
+    # brotli.conf / headers.conf back to what the old binary supports
+    nginx_modules_conf
 }
 
-# upd_nginx_install <version> : build and switch to this version (also used to rebuild).
+# upd_nginx_install <version> [module...] : build and switch to this version (also used to
+# rebuild, or to add / remove modules). Without modules the saved list is used.
 # The running Nginx is only touched when the build is finished.
 # Returns 0 = done
 #         1 = build failed                              (old binary kept)
@@ -93,16 +97,18 @@ _upd_nginx_restore() {
 #         4 = the current configuration is already broken, nothing was done
 upd_nginx_install() {
     local ver="$1"
+    shift
     [ -n "${ver}" ] || return 1
     nginx -t >/dev/null 2>&1 || return 4
 
     mkdir -p "$(dirname "${UPD_NGINX_LOG}")"
     cp -p "${UPD_NGINX_BIN}" "${UPD_NGINX_BAK}" || return 1
 
-    if ! (nginx_build "${ver}") >"${UPD_NGINX_LOG}" 2>&1; then
+    if ! (nginx_build "${ver}" "$@") >"${UPD_NGINX_LOG}" 2>&1; then
         _upd_nginx_restore
         return 1
     fi
+    nginx_modules_conf
     if ! nginx -t >>"${UPD_NGINX_LOG}" 2>&1; then
         _upd_nginx_restore
         return 2

@@ -27,6 +27,9 @@ source /var/hostvn/menu/helpers/os
 # Web server of this installation (nginx or apache) and Apache behind Nginx
 # shellcheck source=/var/hostvn/menu/helpers/apache
 source /var/hostvn/menu/helpers/apache
+# Optional tools (phpMyAdmin, Composer, Rclone, Fail2ban ...) installed on demand
+# shellcheck source=/var/hostvn/menu/helpers/component
+source /var/hostvn/menu/helpers/component
 HOMEPAGE_LINK="https://github.com/${REPO_SLUG}"
 # ${UPDATE_LINK}/version is the version file of the repository
 UPDATE_LINK="${REPO_RAW}"
