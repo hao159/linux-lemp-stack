@@ -71,6 +71,11 @@ _auto_install_plugins(){
 }
 
 _create_vhost() {
+    if ws_is_apache; then
+        # writes the default .htaccess of WordPress and the virtual host
+        ap_site_setup "${domain}" wordpress "${TEMPLATE_DIR}"
+        return
+    fi
     rm -rf "${VHOST_DIR}"/"${domain}".conf
 
     if [ -f "${CUSTOM_DIR}/wordpress.conf" ]; then
@@ -95,14 +100,14 @@ _create_vhost() {
         sed -i "s|ssl_certificate_key ${SSL_DIR}/server/server.key;|ssl_certificate_key ${SSL_DIR}/${domain}/key.pem;|g" "${VHOST_DIR}"/"${domain}".conf
     fi
 
-    if [[ -f "${SSL_DIR}/paid/${domain}/key.pem" && -f "${SSL_DIR}/paid/${domain}/cert.pem" && -s "${SSL_DIR}/paid/${domain}/key.pem" && -s "${SSL_DIR}/paid/${domain}/cert.pem" ]]; then
+    if [[ -f "${SSL_DIR}/${domain}/paid/key.pem" && -f "${SSL_DIR}/${domain}/paid/cert.pem" && -s "${SSL_DIR}/${domain}/paid/key.pem" && -s "${SSL_DIR}/${domain}/paid/cert.pem" ]]; then
         sed -i '/return 404;/d' "${VHOST_DIR}"/"${domain}".conf
         sed -i '/error_page 404/d' "${VHOST_DIR}"/"${domain}".conf
         sed -i '/error_page 404/d' "${VHOST_DIR}"/"${domain}".conf
         sed -i '/https.conf;/d' "${VHOST_DIR}"/"${domain}".conf
         sed -i "/listen 80;/a include ${NGINX_CONF_DIR}/extra/https.conf;" "${VHOST_DIR}"/"${domain}".conf
-        sed -i "s|ssl_certificate ${SSL_DIR}/server/server.crt;|ssl_certificate ${SSL_DIR}/paid/${domain}/cert.pem;|g" "${VHOST_DIR}"/"${domain}".conf
-        sed -i "s|ssl_certificate_key ${SSL_DIR}/server/server.key;|ssl_certificate_key ${SSL_DIR}/paid/${domain}/key.pem;|g" "${VHOST_DIR}"/"${domain}".conf
+        sed -i "s|ssl_certificate ${SSL_DIR}/server/server.crt;|ssl_certificate ${SSL_DIR}/${domain}/paid/cert.pem;|g" "${VHOST_DIR}"/"${domain}".conf
+        sed -i "s|ssl_certificate_key ${SSL_DIR}/server/server.key;|ssl_certificate_key ${SSL_DIR}/${domain}/paid/key.pem;|g" "${VHOST_DIR}"/"${domain}".conf
     fi
 
     sed -i "s|PHP_CONFIG|include ${NGINX_CONF_DIR}/php/${domain}/php_no_cache.conf;|g" "${VHOST_DIR}"/"${domain}".conf

@@ -73,14 +73,15 @@ _destroy_alias_domain() {
         rm -rf "/root/.acme.sh/${alias_domain}"
         rm -rf "${SSL_DIR}/${alias_domain}"
 
-        include_lists=$(grep -i "${alias_domain}" "${VHOST_DIR}"/*.conf | cut -f1 -d':')
-
-        for i in "${include_lists[@]}" ; do
-            rm -rf "$i"
+        # Only the include line goes away, the vhost of the main website stays
+        for i in "${VHOST_DIR}"/*.conf; do
+            [ -f "$i" ] || continue
+            sed -i "\|^[[:space:]]*include[[:space:]]\+${ALIAS_DIR}/${alias_domain//./\.}\.conf;|d" "$i"
         done
 
         if nginx -t; then
             systemctl reload nginx
+            ap_backend_sync >/dev/null 2>&1
             clear
             printf "%s\n" "${GREEN}Xoa Parked/Alias thanh cong.${NC}"
         else
@@ -196,6 +197,7 @@ include ${ALIAS_DIR}/${alias_domain}.conf;
 END
         if nginx -t; then
             systemctl reload nginx
+            ap_backend_sync >/dev/null 2>&1
             clear
             printf "%s\n" "${GREEN}Tao Alias Domain thanh cong.${NC}"
         else

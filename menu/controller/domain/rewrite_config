@@ -105,10 +105,33 @@ _nodejs_proxy_port(){
     sed -i "s/PROXY_PORT/${proxy_port}/g" "${VHOST_DIR}"/"${domain}".conf
 }
 
+# Apache: the virtual host is written again from the website settings (source code,
+# alias domains, certificate). The rewrite rules stay in the .htaccess of the website.
+_run_apache() {
+    if [ "${SOURCE}" == "nodejs" ]; then
+        _nodejs_proxy_port
+    fi
+    ap_site_setup "${domain}" "${SOURCE}" "${TEMPLATE_DIR}" "${proxy_port}"
+    if nginx -t; then
+        _restart_service
+        clear
+        echo ""
+        printf "%sRewrite Vhost thanh cong.%s\n" "${GREEN}" "${NC}"
+        echo ""
+    else
+        printf "%s\n" "${RED}${lang_error_vhost}${NC}"
+    fi
+}
+
 _run() {
     user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
 
     _select_source
+
+    if ws_is_apache; then
+        _run_apache
+        return
+    fi
 
     rm -rf "${VHOST_DIR}"/"${domain}".conf
 

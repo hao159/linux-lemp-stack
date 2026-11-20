@@ -1,0 +1,932 @@
+#!/bin/bash
+
+######################################################################
+#        Apache helper - shared by the installer and the menu        #
+#                                                                    #
+#  Two ways to run Apache, both with the event MPM and PHP-FPM       #
+#  (no mod_php, the PHP pools are the same as with Nginx):           #
+#                                                                    #
+#   standalone : Apache is the web server (ports 80/443), chosen     #
+#                when the server is installed (webserver=apache)     #
+#   backend    : Nginx stays in front (SSL, static files, CrowdSec), #
+#                Apache listens on 127.0.0.1 and runs the websites   #
+#                that need .htaccess (apache_backend=yes)            #
+#                                                                    #
+#  Requires menu/helpers/os loaded.                                  #
+######################################################################
+
+# shellcheck disable=SC2034
+
+AP_FILE_INFO="/var/hostvn/.hostvn.conf"
+AP_USER_DIR="/var/hostvn/users"
+AP_SSL_DIR="/etc/nginx/ssl"
+AP_DEFAULT_ROOT="/usr/share/nginx/html"
+AP_TOOL_ROOT="/usr/share/nginx/private"
+AP_HTPASSWD="/usr/share/nginx/auth/.htpasswd"
+AP_BACKEND_PORT_DEFAULT=8080
+# Redirect domains of the standalone mode, one "<domain> <website>" per line
+AP_REDIRECT_LIST="/var/hostvn/apache/redirects"
+
+if [ "${OS_FAMILY}" == "rhel" ]; then
+    AP_SERVICE="httpd"
+    AP_USER="apache"
+    AP_ROOT="/etc/httpd"
+    AP_GLOBAL="/etc/httpd/conf.d/zz-hostvn.conf"
+    AP_LOG_DIR="/var/log/httpd"
+    AP_ERROR_LOG="/var/log/httpd/error_log"
+else
+    AP_SERVICE="apache2"
+    AP_USER="www-data"
+    AP_ROOT="/etc/apache2"
+    AP_GLOBAL="/etc/apache2/conf-enabled/zz-hostvn.conf"
+    AP_LOG_DIR="/var/log/apache2"
+    AP_ERROR_LOG="/var/log/apache2/error.log"
+fi
+# One file per website, same names as the Nginx vhosts
+AP_VHOST_DIR="${AP_ROOT}/hostvn"
+
+############################################
+# Mode
+############################################
+_ap_info() {
+    grep "^${1}=" "${AP_FILE_INFO}" 2>/dev/null | cut -f2 -d'=' | head -n1
+}
+
+# nginx | apache . WEBSERVER is set by the installer before the info file exists.
+ws_mode() {
+    local mode="${WEBSERVER}"
+    [ -n "${mode}" ] || mode=$(_ap_info webserver)
+    echo "${mode:-nginx}"
+}
+
+ws_is_apache() {
+    [ "$(ws_mode)" == "apache" ]
+}
+
+ap_backend_enabled() {
+    [ "$(_ap_info apache_backend)" == "yes" ]
+}
+
+# Apache runs on this server, in one mode or the other
+ap_in_use() {
+    ws_is_apache || ap_backend_enabled
+}
+
+ap_backend_port() {
+    local port
+    port=$(_ap_info apache_port)
+    echo "${port:-${AP_BACKEND_PORT_DEFAULT}}"
+}
+
+ap_installed() {
+    systemctl list-unit-files 2>/dev/null | grep -q "^${AP_SERVICE}\.service"
+}
+
+# ap_site_backend <domain> : this website is served by the Apache backend
+ap_site_backend() {
+    grep -qs "^backend=apache$" "${AP_USER_DIR}/.${1}.conf"
+}
+
+# Name of the service that answers on ports 80/443
+ws_service() {
+    if ws_is_apache; then
+        echo "${AP_SERVICE}"
+    else
+        echo "nginx"
+    fi
+}
+
+############################################
+# Config test / reload
+############################################
+ap_test() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        httpd -t "$@"
+    else
+        apache2ctl -t "$@"
+    fi
+}
+
+ap_version() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        httpd -v 2>/dev/null
+    else
+        apache2 -v 2>/dev/null
+    fi | grep -oE 'Apache/[0-9.]+' | cut -f2 -d'/'
+}
+
+# Apply the configuration without dropping the connections
+ap_reload() {
+    ap_test >/dev/null 2>&1 || return 1
+    if systemctl is-active --quiet "${AP_SERVICE}"; then
+        systemctl reload "${AP_SERVICE}"
+    else
+        systemctl start "${AP_SERVICE}"
+    fi
+}
+
+# Test and restart the web server of this installation (Nginx or Apache)
+ws_test() {
+    if ws_is_apache; then
+        ap_test
+    else
+        nginx -t
+    fi
+}
+
+ws_restart() {
+    if ws_is_apache; then
+        systemctl restart "${AP_SERVICE}"
+    else
+        systemctl restart nginx
+        ap_backend_enabled && systemctl restart "${AP_SERVICE}"
+    fi
+    return 0
+}
+
+############################################
+# Sizing : Apache only passes the requests to PHP-FPM, a thread costs little
+# memory, but a small VPS still gets a small pool so PHP and MariaDB keep the RAM.
+############################################
+# _ap_servers <standalone|backend> : number of child processes (25 threads each)
+_ap_servers() {
+    local mem servers
+    mem=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null)
+    mem=${mem:-1024}
+    if [ "${mem}" -le 1100 ]; then
+        servers=2
+    elif [ "${mem}" -le 2200 ]; then
+        servers=4
+    elif [ "${mem}" -le 4400 ]; then
+        servers=6
+    else
+        servers=8
+    fi
+    # behind Nginx the slow clients never reach Apache
+    if [ "$1" == "backend" ]; then
+        servers=$((servers / 2))
+    fi
+    echo "${servers}"
+}
+
+# ap_write_global <standalone|backend> [backend port]
+ap_write_global() {
+    local mode="$1" port="${2:-${AP_BACKEND_PORT_DEFAULT}}" servers threads=25 admin_port listen
+    servers=$(_ap_servers "${mode}")
+    admin_port=$(_ap_info admin_port)
+    [ -n "${ADMIN_PORT_NEW}" ] && admin_port="${ADMIN_PORT_NEW}"
+
+    mkdir -p "${AP_VHOST_DIR}" "$(dirname "${AP_GLOBAL}")"
+    if [ "${mode}" == "backend" ]; then
+        listen="127.0.0.1:${port}"
+    else
+        listen="*:80"
+    fi
+
+    {
+        cat <<END
+# Managed by hostvn (${mode}) - rewritten by the menu, put your own settings in another file
+
+ServerName localhost
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+HostnameLookups Off
+EnableSendfile On
+Timeout 60
+DirectoryIndex index.php index.html index.htm
+
+<IfModule mpm_event_module>
+    StartServers             1
+    ServerLimit              ${servers}
+    ThreadsPerChild          ${threads}
+    MinSpareThreads          ${threads}
+    MaxSpareThreads          $((threads * 2))
+    MaxRequestWorkers        $((servers * threads))
+    MaxConnectionsPerChild   2000
+</IfModule>
+
+END
+        if [ "${mode}" == "standalone" ] && [ "$(_ap_info apache_access_log)" == "yes" ]; then
+            mkdir -p "${AP_LOG_DIR}/access"
+            cat <<END
+# Read by CrowdSec, rotated by /etc/logrotate.d/hostvn-apache-access
+LogFormat "%h %l %u %t \\"%r\\" %>s %b \\"%{Referer}i\\" \\"%{User-Agent}i\\"" hostvn_combined
+CustomLog ${AP_LOG_DIR}/access/access.log hostvn_combined
+
+END
+        fi
+        cat <<END
+<Directory /home>
+    Options -Indexes +SymLinksIfOwnerMatch
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<Directory ${AP_DEFAULT_ROOT%/*}>
+    Options -Indexes
+    AllowOverride None
+    Require all granted
+</Directory>
+
+<FilesMatch "^\.(ht|env|user\.ini)">
+    Require all denied
+</FilesMatch>
+
+<DirectoryMatch "/\.(git|svn|hg)(/|\$)">
+    Require all denied
+</DirectoryMatch>
+
+END
+        if [ "${mode}" == "backend" ]; then
+            cat <<END
+Listen ${listen}
+KeepAlive Off
+
+# Nginx is the only client: take the address of the visitor and the scheme from its headers
+RemoteIPHeader X-Forwarded-For
+RemoteIPInternalProxy 127.0.0.1
+SetEnvIf X-Forwarded-Proto "^https\$" HTTPS=on
+
+<VirtualHost ${listen}>
+    ServerName default.invalid
+    DocumentRoot ${AP_DEFAULT_ROOT}
+</VirtualHost>
+
+END
+        else
+            cat <<END
+Listen 80
+Listen 443
+KeepAlive On
+MaxKeepAliveRequests 100
+KeepAliveTimeout 3
+
+Protocols h2 http/1.1
+SSLProtocol -all +TLSv1.2 +TLSv1.3
+SSLHonorCipherOrder Off
+SSLSessionTickets Off
+SSLSessionCache "shmcb:${AP_LOG_DIR}/hostvn_ssl_scache(512000)"
+SSLSessionCacheTimeout 300
+
+Header always set X-Content-Type-Options "nosniff"
+Header always set Referrer-Policy "no-referrer-when-downgrade"
+
+AddOutputFilterByType DEFLATE text/html text/plain text/css text/xml text/javascript application/javascript application/json application/xml application/rss+xml image/svg+xml
+
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/jpeg "access plus 30 days"
+    ExpiresByType image/png "access plus 30 days"
+    ExpiresByType image/gif "access plus 30 days"
+    ExpiresByType image/webp "access plus 30 days"
+    ExpiresByType image/svg+xml "access plus 30 days"
+    ExpiresByType image/x-icon "access plus 30 days"
+    ExpiresByType text/css "access plus 30 days"
+    ExpiresByType application/javascript "access plus 30 days"
+    ExpiresByType font/woff2 "access plus 30 days"
+</IfModule>
+
+# Requests for an unknown name or for the IP address
+<VirtualHost *:80>
+    ServerName default.invalid
+    DocumentRoot ${AP_DEFAULT_ROOT}
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName default.invalid
+    DocumentRoot ${AP_DEFAULT_ROOT}
+    SSLEngine On
+    SSLCertificateFile ${AP_SSL_DIR}/server/server.crt
+    SSLCertificateKeyFile ${AP_SSL_DIR}/server/server.key
+</VirtualHost>
+
+END
+            if [ -n "${admin_port}" ]; then
+                cat <<END
+# phpMyAdmin, Opcache dashboard ... protected by a password
+Listen ${admin_port}
+<VirtualHost *:${admin_port}>
+    ServerName admin.invalid
+    DocumentRoot ${AP_TOOL_ROOT}
+    <Directory ${AP_TOOL_ROOT}>
+        Options -Indexes
+        AllowOverride None
+        AuthType Basic
+        AuthName "Restricted"
+        AuthUserFile ${AP_HTPASSWD}
+        Require valid-user
+    </Directory>
+    <FilesMatch "\.php\$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:unix:/var/run/php-fpm.sock|fcgi://localhost"
+        </If>
+    </FilesMatch>
+</VirtualHost>
+
+END
+            fi
+        fi
+        echo "IncludeOptional ${AP_VHOST_DIR}/*.conf"
+    } >"${AP_GLOBAL}"
+}
+
+############################################
+# Install / remove
+############################################
+_ap_free_port() {
+    local p
+    for p in $(seq "$1" "$(($1 + 50))"); do
+        if ! ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$"; then
+            echo "${p}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_ap_set_info() {
+    [ -f "${AP_FILE_INFO}" ] || return 0
+    sed -i "/^${1}=/d" "${AP_FILE_INFO}"
+    echo "${1}=${2}" >>"${AP_FILE_INFO}"
+}
+
+# ap_install <standalone|backend> : install and configure, the service is left stopped
+# when the configuration is not valid. Returns 1 on error.
+ap_install() {
+    local mode="$1" port="" created_policy="no"
+
+    if [ "${mode}" == "backend" ]; then
+        port=$(_ap_free_port "${AP_BACKEND_PORT_DEFAULT}") || return 1
+    fi
+
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        pkg_install httpd || return 1
+        if [ "${mode}" == "standalone" ]; then
+            pkg_install mod_ssl || return 1
+            pkg_install_optional mod_http2
+            # mod_ssl ships its own Listen 443 and a default virtual host
+            echo "# Emptied by hostvn, see ${AP_GLOBAL}" >/etc/httpd/conf.d/ssl.conf
+        fi
+        sed -i -E 's/^[[:space:]]*Listen[[:space:]]/#&/' /etc/httpd/conf/httpd.conf
+        # one access log for every website is only disk writes on a small VPS
+        sed -i -E 's/^[[:space:]]*CustomLog[[:space:]]/#&/' /etc/httpd/conf/httpd.conf
+        echo "# Emptied by hostvn" >/etc/httpd/conf.d/welcome.conf
+        if [ -f /etc/httpd/conf.modules.d/00-mpm.conf ]; then
+            sed -i -E 's/^[[:space:]]*(LoadModule mpm_(prefork|worker)_module)/#\1/' /etc/httpd/conf.modules.d/00-mpm.conf
+            sed -i -E 's/^#[[:space:]]*(LoadModule mpm_event_module)/\1/' /etc/httpd/conf.modules.d/00-mpm.conf
+        fi
+    else
+        # The package starts Apache as soon as it is unpacked, on a port Nginx may be using
+        if [ ! -e /usr/sbin/policy-rc.d ]; then
+            printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
+            chmod +x /usr/sbin/policy-rc.d
+            created_policy="yes"
+        fi
+        pkg_install apache2
+        local rc=$?
+        [ "${created_policy}" == "yes" ] && rm -f /usr/sbin/policy-rc.d
+        [ "${rc}" -eq 0 ] || return 1
+
+        a2dismod -f -q mpm_prefork mpm_worker status autoindex negotiation cgi cgid >/dev/null 2>&1
+        a2enmod -q mpm_event proxy proxy_fcgi proxy_http rewrite headers expires deflate setenvif remoteip \
+            auth_basic authn_file authz_user >/dev/null 2>&1
+        if [ "${mode}" == "standalone" ]; then
+            a2enmod -q ssl http2 socache_shmcb >/dev/null 2>&1
+        fi
+        a2dissite -q 000-default default-ssl >/dev/null 2>&1
+        a2disconf -q other-vhosts-access-log serve-cgi-bin >/dev/null 2>&1
+        echo "# Emptied by hostvn, see ${AP_GLOBAL}" >/etc/apache2/ports.conf
+    fi
+
+    # The PHP-FPM sockets belong to the group nginx
+    os_add_nginx_user
+    usermod -aG nginx "${AP_USER}"
+
+    mkdir -p "${AP_VHOST_DIR}" "${AP_DEFAULT_ROOT}"
+    ap_write_global "${mode}" "${port}"
+    if [ "${mode}" == "backend" ]; then
+        _ap_set_info apache_backend yes
+        _ap_set_info apache_port "${port}"
+    fi
+
+    systemctl daemon-reload
+    systemctl enable "${AP_SERVICE}" >/dev/null 2>&1
+    if ! ap_test >/dev/null 2>&1; then
+        return 1
+    fi
+    systemctl restart "${AP_SERVICE}"
+    systemctl is-active --quiet "${AP_SERVICE}"
+}
+
+# Remove the Apache backend (Nginx mode only), the websites must be moved back to Nginx first
+ap_backend_remove() {
+    systemctl disable --now "${AP_SERVICE}" >/dev/null 2>&1
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        pkg_remove httpd
+    else
+        pkg_remove apache2 apache2-bin apache2-data apache2-utils
+        # htpasswd (apache2-utils) is used by the menu
+        pkg_install apache2-utils >/dev/null 2>&1
+    fi
+    rm -rf "${AP_VHOST_DIR}" "${AP_GLOBAL}"
+    _ap_set_info apache_backend no
+    sed -i '/^apache_port=/d' "${AP_FILE_INFO}"
+}
+
+############################################
+# Websites
+############################################
+_ap_site() {
+    grep "^${2}=" "${AP_USER_DIR}/.${1}.conf" 2>/dev/null | cut -f2- -d'=' | head -n1
+}
+
+# _ap_set_site <domain> <key> [value] : empty value removes the key
+_ap_set_site() {
+    local file="${AP_USER_DIR}/.${1}.conf"
+    [ -f "${file}" ] || return 1
+    sed -i "/^${2}=/d" "${file}"
+    [ -n "$3" ] && echo "${2}=${3}" >>"${file}"
+    return 0
+}
+
+# ap_site_docroot <domain> : folder served by the web server (public_html, or a sub folder)
+ap_site_docroot() {
+    local root
+    root=$(_ap_site "$1" docroot)
+    [ -n "${root}" ] || root=$(_ap_site "$1" public_html)
+    echo "${root}"
+}
+
+# Sub folder of public_html that a source code serves (Laravel: /public ...),
+# read from the Nginx template of the same source so both web servers agree.
+# ap_source_subdir <source> <template dir>
+ap_source_subdir() {
+    local tpl="${2}/${1}.conf"
+    [ -f "${tpl}" ] || return 0
+    grep -m1 -E '^[[:space:]]*root[[:space:]]+/home/WEBSITE_USER/WEBSITE_DOMAIN/public_html' "${tpl}" |
+        sed -E 's|.*public_html([^;]*);.*|\1|'
+}
+
+# Alias domains of a website.
+#   standalone : kept in a comment of the virtual host (written by ap_vhost_write)
+#   backend    : the alias files of Nginx that point to this website
+_ap_site_aliases() {
+    local domain="$1" user file f list=""
+    if ws_is_apache; then
+        # the website file is the reference (it moves with the website), the comment in
+        # the virtual host is what older versions wrote
+        if grep -qs "^alias_domains=" "${AP_USER_DIR}/.${domain}.conf"; then
+            _ap_site "${domain}" alias_domains
+            return 0
+        fi
+        file="${AP_VHOST_DIR}/${domain}.conf"
+        [ -f "${file}" ] || return 0
+        grep -m1 -E '^# hostvn-alias:' "${file}" | sed -E 's/^# hostvn-alias:[[:space:]]*//'
+        return 0
+    fi
+    user=$(_ap_site "${domain}" username)
+    for f in /etc/nginx/alias/*.conf; do
+        [ -f "${f}" ] || continue
+        if grep -q "/home/${user}/${domain}/" "${f}"; then
+            f=${f##*/}
+            list="${list} ${f%.conf}"
+        fi
+    done
+    echo "${list# }"
+}
+
+# Certificate of a website: the paid one first, then Let's Encrypt. Prints "<cert> <key>".
+_ap_site_cert() {
+    local dir
+    for dir in "${AP_SSL_DIR}/${1}/paid" "${AP_SSL_DIR}/${1}"; do
+        if [ -s "${dir}/cert.pem" ] && [ -s "${dir}/key.pem" ]; then
+            echo "${dir}/cert.pem ${dir}/key.pem"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ap_site_has_ssl <domain> : the virtual host answers on 443 with its own certificate
+ap_site_has_ssl() {
+    grep -qs "SSLCertificateFile" "${AP_VHOST_DIR}/${1}.conf"
+}
+
+# _ap_vhost_body <domain> <user> <docroot> <port of a Node.js app or empty> <error log name>
+_ap_vhost_body() {
+    local domain="$1" user="$2" docroot="$3" node_port="$4" log="$5"
+    cat <<END
+    DocumentRoot "${docroot}"
+    ErrorLog /home/${user}/${domain}/logs/${log}
+END
+    if [ -n "${node_port}" ]; then
+        cat <<END
+    ProxyPreserveHost On
+    ProxyPass /.well-known/acme-challenge/ !
+    ProxyPass / http://127.0.0.1:${node_port}/
+    ProxyPassReverse / http://127.0.0.1:${node_port}/
+END
+    else
+        cat <<END
+    <FilesMatch "\.php\$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:unix:/var/run/php/${user}.sock|fcgi://localhost"
+        </If>
+    </FilesMatch>
+END
+    fi
+}
+
+# ap_vhost_write <domain> [alias domains ...]
+# Writes the Apache virtual host of a website from its file in /var/hostvn/users :
+#   backend mode    : one virtual host on 127.0.0.1, Nginx does HTTPS
+#   standalone mode : port 80, plus port 443 and the redirect to HTTPS when a certificate is
+#                     installed in /etc/nginx/ssl/<domain>/ (same folder for both web servers)
+# Call it again after a change (alias, SSL, document root): the file is rewritten.
+# Pass "-" as the only alias to remove every alias.
+ap_vhost_write() {
+    local domain="$1" user docroot port node_port names alias aliases="" file cert ssl_hosts=""
+    shift
+    user=$(_ap_site "${domain}" username)
+    docroot=$(ap_site_docroot "${domain}")
+    [ -n "${user}" ] && [ -n "${docroot}" ] || return 1
+    port=$(_ap_site "${domain}" port)
+    node_port=$(_ap_site "${domain}" proxy_port)
+    file="${AP_VHOST_DIR}/${domain}.conf"
+
+    if [ "$#" -gt 0 ]; then
+        aliases="$*"
+        [ "${aliases}" == "-" ] && aliases=""
+    else
+        aliases=$(_ap_site_aliases "${domain}")
+    fi
+    names="www.${domain}"
+    for alias in ${aliases}; do
+        names="${names} ${alias} www.${alias}"
+    done
+
+    if ws_is_apache; then
+        sed -i '/^alias_domains=/d' "${AP_USER_DIR}/.${domain}.conf"
+        echo "alias_domains=${aliases}" >>"${AP_USER_DIR}/.${domain}.conf"
+    fi
+
+    mkdir -p "${AP_VHOST_DIR}"
+    {
+        echo "# Managed by hostvn - rewritten by the menu, your changes are lost"
+        echo "# hostvn-alias: ${aliases}"
+        if ! ws_is_apache; then
+            echo "<VirtualHost 127.0.0.1:$(ap_backend_port)>"
+            echo "    ServerName ${domain}"
+            echo "    ServerAlias ${names}"
+            _ap_vhost_body "${domain}" "${user}" "${docroot}" "${node_port}" "apache_error.log"
+            echo "</VirtualHost>"
+        elif [ -n "${port}" ]; then
+            # dev website on IP:PORT, any host name
+            echo "Listen ${port}"
+            echo "<VirtualHost *:${port}>"
+            echo "    ServerName ${domain}"
+            _ap_vhost_body "${domain}" "${user}" "${docroot}" "${node_port}" "error.log"
+            echo "</VirtualHost>"
+        else
+            cert=$(_ap_site_cert "${domain}")
+            # Only the names that have a certificate are sent to HTTPS: the website itself,
+            # and the alias domains with their own certificate (menu SSL -> alias domain)
+            [ -n "${cert}" ] && ssl_hosts="(www\\.)?${domain//./\\.}"
+            for alias in ${aliases}; do
+                if _ap_site_cert "${alias}" >/dev/null; then
+                    ssl_hosts="${ssl_hosts:+${ssl_hosts}|}${alias//./\\.}"
+                fi
+            done
+            echo "<VirtualHost *:80>"
+            echo "    ServerName ${domain}"
+            echo "    ServerAlias ${names}"
+            if [ -n "${ssl_hosts}" ]; then
+                echo "    RewriteEngine On"
+                echo "    RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/"
+                echo "    RewriteCond %{HTTP_HOST} ^(${ssl_hosts})\$ [NC]"
+                echo "    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]"
+            fi
+            _ap_vhost_body "${domain}" "${user}" "${docroot}" "${node_port}" "error.log"
+            echo "</VirtualHost>"
+            if [ -n "${cert}" ]; then
+                echo
+                echo "<VirtualHost *:443>"
+                echo "    ServerName ${domain}"
+                echo "    ServerAlias www.${domain}"
+                echo "    SSLEngine On"
+                echo "    SSLCertificateFile ${cert% *}"
+                echo "    SSLCertificateKeyFile ${cert#* }"
+                _ap_vhost_body "${domain}" "${user}" "${docroot}" "${node_port}" "error.log"
+                echo "</VirtualHost>"
+            fi
+            for alias in ${aliases}; do
+                cert=$(_ap_site_cert "${alias}") || continue
+                echo
+                echo "<VirtualHost *:443>"
+                echo "    ServerName ${alias}"
+                echo "    SSLEngine On"
+                echo "    SSLCertificateFile ${cert% *}"
+                echo "    SSLCertificateKeyFile ${cert#* }"
+                _ap_vhost_body "${domain}" "${user}" "${docroot}" "${node_port}" "error.log"
+                echo "</VirtualHost>"
+            done
+        fi
+    } >"${file}"
+    # a redirect domain follows the scheme (http/https) of its website
+    if ws_is_apache && [ -s "${AP_REDIRECT_LIST}" ]; then
+        ap_redirect_write
+    fi
+    return 0
+}
+
+ap_vhost_remove() {
+    rm -f "${AP_VHOST_DIR}/${1}.conf"
+}
+
+# ap_site_setup <domain> <source> <template dir> [port of the Node.js app]
+# Standalone mode: record how the website is served and write its virtual host.
+# Used when a website is created and by "Rewrite config".
+ap_site_setup() {
+    local domain="$1" source="$2" tpl_dir="$3" node_port="$4" public docroot
+    public=$(_ap_site "${domain}" public_html)
+    [ -n "${public}" ] || return 1
+    docroot="${public}$(ap_source_subdir "${source}" "${tpl_dir}")"
+    # the sub folder appears with the source code (composer create-project ...)
+    [ -d "${docroot}" ] || docroot="${public}"
+
+    _ap_set_site "${domain}" docroot "${docroot}"
+    _ap_set_site "${domain}" source "${source}"
+    if [ "${source}" == "nodejs" ]; then
+        _ap_set_site "${domain}" proxy_port "${node_port}"
+    else
+        _ap_set_site "${domain}" proxy_port ""
+    fi
+
+    # WordPress only writes its .htaccess when the permalinks are saved
+    if [ -f "${docroot}/wp-load.php" ] && [ ! -f "${docroot}/.htaccess" ]; then
+        cat >"${docroot}/.htaccess" <<'END'
+# BEGIN WordPress
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteBase /
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+</IfModule>
+# END WordPress
+END
+        chown --reference="${docroot}" "${docroot}/.htaccess"
+        chmod 644 "${docroot}/.htaccess"
+        [ "$(_ap_site "${domain}" disable_xmlrpc)" == "yes" ] && ap_wp_block "${domain}" xmlrpc on
+        [ "$(_ap_site "${domain}" disable_user_api)" == "yes" ] && ap_wp_block "${domain}" user_api on
+    fi
+
+    ap_vhost_write "${domain}"
+}
+
+# Rewrite the virtual host of every website (after a move to another VPS, a change of
+# the global settings ...). Standalone mode.
+ap_rebuild_all() {
+    local f domain
+    for f in "${AP_USER_DIR}"/.*.conf; do
+        [ -f "${f}" ] || continue
+        domain=${f##*/.}
+        ap_vhost_write "${domain%.conf}"
+    done
+    ap_redirect_write
+}
+
+############################################
+# Redirect domains (standalone mode): <domain> and www.<domain> answer with a 301
+# to a website of this server.
+############################################
+ap_redirect_list() {
+    [ -f "${AP_REDIRECT_LIST}" ] && awk 'NF == 2 {print $1}' "${AP_REDIRECT_LIST}"
+}
+
+# ap_redirect_target <redirect domain>
+ap_redirect_target() {
+    [ -f "${AP_REDIRECT_LIST}" ] && awk -v d="$1" '$1 == d {print $2; exit}' "${AP_REDIRECT_LIST}"
+}
+
+ap_redirect_write() {
+    local file="${AP_VHOST_DIR}/_redirects.conf" name target cert
+    if [ ! -s "${AP_REDIRECT_LIST}" ]; then
+        rm -f "${file}"
+        return 0
+    fi
+    mkdir -p "${AP_VHOST_DIR}"
+    {
+        echo "# Managed by hostvn - redirect domains, rewritten by the menu"
+        while read -r name target; do
+            [ -n "${name}" ] && [ -n "${target}" ] || continue
+            cert=$(_ap_site_cert "${target}")
+            echo "<VirtualHost *:80>"
+            echo "    ServerName ${name}"
+            echo "    ServerAlias www.${name}"
+            echo "    Redirect permanent / http${cert:+s}://${target}/"
+            echo "</VirtualHost>"
+            # HTTPS requests are answered with the certificate of the website, like the
+            # Nginx version does: the browser warns unless that certificate covers the name
+            if [ -n "${cert}" ]; then
+                echo "<VirtualHost *:443>"
+                echo "    ServerName ${name}"
+                echo "    ServerAlias www.${name}"
+                echo "    SSLEngine On"
+                echo "    SSLCertificateFile ${cert% *}"
+                echo "    SSLCertificateKeyFile ${cert#* }"
+                echo "    Redirect permanent / https://${target}/"
+                echo "</VirtualHost>"
+            fi
+        done <"${AP_REDIRECT_LIST}"
+    } >"${file}"
+}
+
+# ap_redirect_add <redirect domain> <website>
+ap_redirect_add() {
+    mkdir -p "$(dirname "${AP_REDIRECT_LIST}")"
+    ap_redirect_del "$1" norewrite
+    echo "$1 $2" >>"${AP_REDIRECT_LIST}"
+    ap_redirect_write
+}
+
+ap_redirect_del() {
+    [ -f "${AP_REDIRECT_LIST}" ] || return 0
+    awk -v d="$1" '$1 != d' "${AP_REDIRECT_LIST}" >"${AP_REDIRECT_LIST}.tmp"
+    mv "${AP_REDIRECT_LIST}.tmp" "${AP_REDIRECT_LIST}"
+    [ "$2" == "norewrite" ] || ap_redirect_write
+}
+
+# ap_redirect_del_target <website> : the website is deleted, its redirect domains too
+ap_redirect_del_target() {
+    [ -f "${AP_REDIRECT_LIST}" ] || return 0
+    awk -v d="$1" '$2 != d' "${AP_REDIRECT_LIST}" >"${AP_REDIRECT_LIST}.tmp"
+    mv "${AP_REDIRECT_LIST}.tmp" "${AP_REDIRECT_LIST}"
+    ap_redirect_write
+}
+
+# ap_redirect_retarget <old website> <new website> : the website got another name
+ap_redirect_retarget() {
+    [ -f "${AP_REDIRECT_LIST}" ] || return 0
+    awk -v o="$1" -v n="$2" '{ if ($2 == o) $2 = n; print $1, $2 }' "${AP_REDIRECT_LIST}" >"${AP_REDIRECT_LIST}.tmp"
+    mv "${AP_REDIRECT_LIST}.tmp" "${AP_REDIRECT_LIST}"
+    ap_redirect_write
+}
+
+############################################
+# .htaccess blocks : what the Nginx version writes in the vhost (folder protected by a
+# password, xmlrpc.php, users API ...) is a marked block of a .htaccess with Apache.
+############################################
+# ap_htaccess_has <file> <name>
+ap_htaccess_has() {
+    grep -qs "^# BEGIN hostvn ${2}\$" "$1"
+}
+
+# ap_htaccess_block <file> <name> : the block <name> becomes what is read on stdin, on top of
+# the file so it is applied before the rules of the website. Nothing on stdin removes the block.
+ap_htaccess_block() {
+    local file="$1" name="$2" content dir tmp
+    content=$(cat)
+    dir=$(dirname "${file}")
+    [ -d "${dir}" ] || return 1
+    tmp=$(mktemp)
+    if [ -n "${content}" ]; then
+        printf '# BEGIN hostvn %s\n%s\n# END hostvn %s\n' "${name}" "${content}" "${name}" >"${tmp}"
+    fi
+    if [ -f "${file}" ]; then
+        sed "/^# BEGIN hostvn ${name}\$/,/^# END hostvn ${name}\$/d" "${file}" >>"${tmp}"
+    fi
+    if [ ! -s "${tmp}" ]; then
+        rm -f "${tmp}" "${file}"
+        return 0
+    fi
+    cat "${tmp}" >"${file}"
+    rm -f "${tmp}"
+    chown --reference="${dir}" "${file}"
+    chmod 644 "${file}"
+}
+
+# ap_wp_block <domain> <xmlrpc|user_api> <on|off> : same protections as
+# /etc/nginx/wordpress/disable_*.conf
+ap_wp_block() {
+    local file
+    file="$(ap_site_docroot "$1")/.htaccess"
+    if [ "$3" != "on" ]; then
+        ap_htaccess_block "${file}" "$2" </dev/null
+        return
+    fi
+    case "$2" in
+    xmlrpc)
+        ap_htaccess_block "${file}" xmlrpc <<'END'
+<Files "xmlrpc.php">
+    Require all denied
+</Files>
+END
+        ;;
+    user_api)
+        ap_htaccess_block "${file}" user_api <<'END'
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{REMOTE_ADDR} !^127\.0\.0\.1$
+RewriteCond %{REQUEST_URI} ^/wp-json/wp/v2/users [NC,OR]
+RewriteCond %{QUERY_STRING} (^|&)rest_route=/wp/v2/users [NC]
+RewriteRule ^ - [F,L]
+</IfModule>
+END
+        ;;
+    esac
+}
+
+############################################
+# Backend mode: Nginx in front of Apache, website by website
+############################################
+AP_NGINX_PHP_DIR="/etc/nginx/php"
+AP_NGINX_VHOST_DIR="/etc/nginx/conf.d"
+
+# The PHP include of the website is the hook: every Nginx vhost written by the menu
+# (rewrite config, SSL, alias, cache on/off ...) includes one of these three files,
+# so they send the PHP requests to Apache and nothing else in the vhost changes.
+# Nginx keeps serving the files that exist; the original URL is passed on, so the
+# rewrite rules of .htaccess apply to everything that reaches PHP.
+_ap_backend_php_conf() {
+    cat <<END
+# Managed by hostvn - Apache backend. Turn it off in the menu to get the Nginx version back.
+location ~ \.php {
+    proxy_pass http://127.0.0.1:$(ap_backend_port)\$request_uri;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+END
+}
+
+# ap_backend_site_enable <domain> : 0 = done, 1 = error, 2 = this website can not use it
+ap_backend_site_enable() {
+    local domain="$1" vhost docroot f
+    vhost="${AP_NGINX_VHOST_DIR}/${domain}.conf"
+    [ -f "${vhost}" ] && [ -d "${AP_NGINX_PHP_DIR}/${domain}" ] || return 2
+    # Node.js websites and IP:PORT websites have no PHP include / no host name to match
+    grep -q "${AP_NGINX_PHP_DIR}/${domain}/php_" "${vhost}" || return 2
+    [ -z "$(_ap_site "${domain}" port)" ] || return 2
+
+    docroot=$(grep -m1 -E '^[[:space:]]*root[[:space:]]+/' "${vhost}" | awk '{print $2}' | tr -d ';')
+    [ -n "${docroot}" ] || return 1
+    _ap_set_site "${domain}" docroot "${docroot}"
+    _ap_set_site "${domain}" backend apache
+    ap_vhost_write "${domain}" || return 1
+
+    for f in php_no_cache.conf php_cache.conf php_cache_woo.conf; do
+        _ap_backend_php_conf >"${AP_NGINX_PHP_DIR}/${domain}/${f}"
+    done
+    ap_reload || return 1
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx
+}
+
+# ap_backend_site_disable <domain> <template dir> <custom dir>
+ap_backend_site_disable() {
+    local domain="$1" tpl_dir="$2" custom_dir="$3" user f src
+    user=$(_ap_site "${domain}" username)
+    for f in php_no_cache.conf php_cache.conf php_cache_woo.conf; do
+        src="${tpl_dir}/${f}"
+        [ -f "${custom_dir}/${f}" ] && src="${custom_dir}/${f}"
+        [ -f "${src}" ] || continue
+        sed "s/WEBSITE_USER/${user}/g" "${src}" >"${AP_NGINX_PHP_DIR}/${domain}/${f}"
+    done
+    _ap_set_site "${domain}" backend ""
+    _ap_set_site "${domain}" docroot ""
+    ap_vhost_remove "${domain}"
+    ap_reload
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx
+}
+
+# Websites served by the Apache backend
+ap_backend_sites() {
+    local f
+    for f in "${AP_USER_DIR}"/.*.conf; do
+        [ -f "${f}" ] || continue
+        if grep -q "^backend=apache$" "${f}"; then
+            f=${f##*/.}
+            echo "${f%.conf}"
+        fi
+    done
+}
+
+# Call after an alias domain was added or removed in Nginx: the Apache virtual host
+# has to know the new name. No-op for websites that do not use the backend.
+ap_backend_sync() {
+    ap_backend_enabled || return 0
+    local domain
+    for domain in $(ap_backend_sites); do
+        ap_vhost_write "${domain}"
+    done
+    ap_reload
+}

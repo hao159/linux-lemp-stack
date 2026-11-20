@@ -68,35 +68,12 @@ while [ "${CHOICE}" != "0" ]; do
         ;;
     3)
         clear
-        NGINX_NEW_VERSION=$(get_version nginx_new_version)
-        NGINX_CURRENT_VERSION=$(nginx -v 2>&1 | grep -o '[0-9.]*$')
-        if [[ -n "$NGINX_NEW_VERSION" && "$NGINX_NEW_VERSION" != "$NGINX_CURRENT_VERSION" ]]; then
-            if nginx_build "${NGINX_NEW_VERSION}" && nginx -t; then
-                systemctl restart nginx
-                clear
-                printf "%s\n" "${GREEN}Update Nginx ${NGINX_NEW_VERSION} successful.${NC}"
-            else
-                nginx -t
-                printf "%s\n" "${RED}${lang_nginx_config_error}${NC}"
-            fi
-        else
-            printf "%s\n" "${RED}Khong tim thay phien ban Nginx moi${NC}"
-        fi
-        _cd_dir "${BASH_DIR}"
+        update_nginx
         lemp_nginx
         ;;
     4)
         clear
-        NGINX_CURRENT_VERSION=$(nginx -v 2>&1 | grep -o '[0-9.]*$')
-        if nginx_build "${NGINX_CURRENT_VERSION}" && nginx -t; then
-            systemctl restart nginx
-            clear
-            printf "%s\n" "${GREEN}Rebuild Nginx successful.${NC}"
-        else
-            nginx -t
-            printf "%s\n" "${RED}${lang_nginx_config_error}${NC}"
-        fi
-        _cd_dir "${BASH_DIR}"
+        update_nginx rebuild
         lemp_nginx
         ;;
     0)

@@ -142,7 +142,27 @@ _create_key(){
     fi
 }
 
+# Apache: the virtual host is written again, it uses the paid certificate when both files exist
+_apache_apply(){
+    ap_vhost_write "${domain}"
+    if nginx -t; then
+        _restart_service
+        clear
+        notify="${GREEN}Cau hinh thanh cong.${NC}"
+    else
+        printf "%s\n" "${RED}${lang_error_vhost}${NC}"
+    fi
+}
+
 _redirect_http_to_https(){
+    if ws_is_apache; then
+        if [[ -s "${SSL_DIR}/${domain}/paid/key.pem" && -s "${SSL_DIR}/${domain}/paid/cert.pem" ]]; then
+            _apache_apply
+        else
+            notify="${RED}Ban chua tao chung chi SSL. Vui long tao chung chi SSL truoc.${NC}"
+        fi
+        return
+    fi
     if [[ -f "${SSL_DIR}/${domain}/paid/key.pem" && -f "${SSL_DIR}/${domain}/paid/cert.pem" && -s "${SSL_DIR}/${domain}/paid/key.pem" && -s "${SSL_DIR}/${domain}/paid/cert.pem" ]]; then
         sed -i '/https.conf/d' "${VHOST_DIR}"/"${domain}".conf
         sed -i "/listen 80;/a include ${NGINX_CONF_DIR}/extra/https.conf;" "${VHOST_DIR}"/"${domain}".conf
@@ -170,6 +190,14 @@ _redirect_http_to_https(){
 }
 
 _remove_ssl(){
+    if ws_is_apache; then
+        # the certificate is kept next to the key, only taken out of use
+        if [ -f "${SSL_DIR}/${domain}/paid/cert.pem" ]; then
+            mv -f "${SSL_DIR}/${domain}/paid/cert.pem" "${SSL_DIR}/${domain}/paid/cert.pem.removed"
+        fi
+        _apache_apply
+        return
+    fi
     sed -i '/https.conf/d' "${VHOST_DIR}"/"${domain}".conf
     sed -i '/ssl_certificate/d' "${VHOST_DIR}"/"${domain}".conf
     sed -i '/ssl_certificate_key/d' "${VHOST_DIR}"/"${domain}".conf

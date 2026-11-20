@@ -33,6 +33,10 @@ source "${LEMP_SRC_DIR}/menu/helpers/os"
 source "${LEMP_SRC_DIR}/menu/helpers/telegram"
 # shellcheck source=menu/helpers/crowdsec
 source "${LEMP_SRC_DIR}/menu/helpers/crowdsec"
+# shellcheck source=menu/helpers/update
+source "${LEMP_SRC_DIR}/menu/helpers/update"
+# shellcheck source=menu/helpers/apache
+source "${LEMP_SRC_DIR}/menu/helpers/apache"
 
 # prod =public VPS, dev = internal dev server (sites on IP:PORT)
 INSTALL_MODE="${INSTALL_MODE:-prod}"
@@ -301,18 +305,49 @@ ask_yes_no() {
     done
 }
 
+# Nginx (default) or Apache. Preset with: WEBSERVER=apache ./install
+option_webserver() {
+    local choice ram_mb
+    case "${WEBSERVER}" in
+    nginx | apache) return 0 ;;
+    esac
+    WEBSERVER="nginx"
+    ram_mb=$((RAM_TOTAL / 1024))
+    clear
+    echo "Lua chon web server (RAM cua VPS: ${ram_mb} MB)"
+    echo "  1. Nginx  - nhe nhat, co FastCGI cache va CrowdSec AppSec (WAF). Khuyen dung."
+    echo "  2. Apache - ho tro .htaccess / mod_rewrite. Chay event MPM + PHP-FPM, khong dung mod_php."
+    echo ""
+    echo "Chon Nginx van co the bat Apache phia sau cho rieng website can .htaccess (menu hostvn)."
+    if [ "${ram_mb}" -lt 900 ]; then
+        echo "VPS duoi 1GB RAM: nen chon Nginx."
+    fi
+    echo ""
+    while true; do
+        read -r -p "Nhap vao lua chon cua ban [1-2] (Enter = 1): " choice
+        case "${choice}" in
+        "" | 1) WEBSERVER="nginx"; break ;;
+        2) WEBSERVER="apache"; break ;;
+        *) echo "Lua chon khong chinh xac, vui long nhap lai." ;;
+        esac
+    done
+}
+
 # CrowdSec, AppSec and Telegram are optional, all of them can be added later from the menu.
 option_security() {
     INSTALL_CROWDSEC="n"
     INSTALL_APPSEC="n"
     clear
-    echo "CrowdSec doc log Nginx/SSH va tu dong chan IP tan cong, IP scan (giam log ban)."
-    echo "Khi cai CrowdSec, access log cua Nginx se duoc bat (co rotate)."
-    echo "AppSec la WAF cua CrowdSec, chan request doc hai truoc khi toi website."
+    echo "CrowdSec doc log web server/SSH va tu dong chan IP tan cong, IP scan (giam log ban)."
+    echo "Khi cai CrowdSec, access log cua web server se duoc bat (co rotate)."
+    if [ "${WEBSERVER}" != "apache" ]; then
+        echo "AppSec la WAF cua CrowdSec, chan request doc hai truoc khi toi website."
+    fi
     echo ""
     if ask_yes_no "Ban co muon cai dat CrowdSec khong ?"; then
         INSTALL_CROWDSEC="y"
-        if ask_yes_no "Ban co muon bat AppSec (WAF) khong ?"; then
+        # AppSec runs in the Nginx Lua bouncer, there is none for Apache
+        if [ "${WEBSERVER}" != "apache" ] && ask_yes_no "Ban co muon bat AppSec (WAF) khong ?"; then
             INSTALL_APPSEC="y"
         fi
         echo ""
@@ -481,6 +516,21 @@ install_nginx() {
     nginx_build "$(get_version nginx_version)" || fatal "Build Nginx that bai."
     nginx_install_service
     cd_dir "${DIR}"
+}
+
+# Apache instead of Nginx. The account "nginx" and the folders under /etc/nginx and
+# /usr/share/nginx are kept: the PHP pools, the certificates and the admin tools use them.
+install_apache() {
+    os_add_nginx_user
+    mkdir -p /etc/nginx/ssl "${DEFAULT_DIR_WEB}" "${DEFAULT_DIR_TOOL}" /var/log/nginx
+    chown -R nginx:nginx "${DEFAULT_DIR_WEB}"
+}
+
+setup_apache() {
+    ADMIN_PORT_NEW="${RANDOM_ADMIN_PORT}"
+    if ! ap_install standalone; then
+        printf "${RED}%s${NC}\n" "Apache khong khoi dong duoc, vui long kiem tra cau hinh (apache2ctl -t / httpd -t)."
+    fi
 }
 
 install_mariadb() {
@@ -2671,7 +2721,19 @@ destemail  = ${ADMIN_EMAIL}
 sender     = ${ADMIN_EMAIL}
 sendername = Fail2ban
 END
-    cat >"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
+    if [ "${WEBSERVER}" == "apache" ]; then
+        cat >"/etc/fail2ban/jail.d/apache-auth.conf" <<END
+[apache-auth]
+enabled  = true
+filter   = apache-auth
+port     = ${RANDOM_ADMIN_PORT}
+logpath  = ${AP_LOG_DIR}/*error*log
+backend  = auto
+maxretry = 5
+bantime  = 86400
+END
+    else
+        cat >"/etc/fail2ban/jail.d/nginx-http-auth.conf" <<END
 [nginx-http-auth]
 enabled  = true
 filter   = nginx-http-auth
@@ -2681,6 +2743,7 @@ backend  = auto
 maxretry = 5
 bantime  = 86400
 END
+    fi
     cat >"/etc/fail2ban/jail.d/sshd.local" <<END
 [sshd]
 enabled  = true
@@ -2691,6 +2754,7 @@ maxretry = 5
 bantime  = 86400
 END
 
+    mkdir -p /var/log/nginx
     touch /var/log/nginx/error.log
     systemctl enable fail2ban
     systemctl restart fail2ban
@@ -2762,7 +2826,7 @@ write_info() {
         echo "php2_release=${PHP2_RELEASE}"
         echo "php1_version=${PHP_VERSION}"
         echo "php2_version=${PHP_VERSION_2}"
-        echo "webserver=nginx"
+        echo "webserver=${WEBSERVER}"
         echo "lang=vi"
         echo "install_mode=${INSTALL_MODE}"
     } >>"${FILE_INFO}"
@@ -3077,6 +3141,7 @@ if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
     check_duplicate_php
 fi
 
+option_webserver
 option_security
 option_telegram
 
@@ -3085,7 +3150,11 @@ cal_ssl_cache_size
 php_parameter
 mariadb_calculation
 
-install_nginx
+if [ "${WEBSERVER}" == "apache" ]; then
+    install_apache
+else
+    install_nginx
+fi
 self_signed_ssl
 install_mariadb
 install_php
@@ -3102,12 +3171,14 @@ if [[ "${MULTI_PHP}" =~ ^(Y|y)$ ]]; then
     systemctl restart "$(php_service "${PHP_VERSION_2}")"
 fi
 
-create_nginx_conf
-#_create_mod_security_config
-create_wordpress_conf
-create_extra_conf
-default_vhost
-vhost_custom
+if [ "${WEBSERVER}" != "apache" ]; then
+    create_nginx_conf
+    #_create_mod_security_config
+    create_wordpress_conf
+    create_extra_conf
+    default_vhost
+    vhost_custom
+fi
 default_index
 default_error_page
 php_global_config
@@ -3117,7 +3188,7 @@ systemctl enable "$(php_service "${PHP_VERSION}")"
 hostvn_custom_ini
 php_opcache
 systemctl restart "$(php_service "${PHP_VERSION}")"
-wp_rocket_nginx
+[ "${WEBSERVER}" != "apache" ] && wp_rocket_nginx
 config_my_cnf
 
 install_phpmyadmin
@@ -3146,7 +3217,9 @@ if [ "${INSTALL_MODE}" != "dev" ]; then
     kernel_tweak
 fi
 
-if nginx -t; then
+if [ "${WEBSERVER}" == "apache" ]; then
+    setup_apache
+elif nginx -t; then
     systemctl restart nginx
 else
     printf "${RED}%s${NC}\n" "Cau hinh Nginx bi loi, vui long kiem tra: nginx -t"
@@ -3155,6 +3228,8 @@ fi
 # Nginx has to be running: AppSec is plugged into it and reloads it
 setup_security
 setup_telegram
+# Daily check for updates: banner in the menu, Telegram message when it is configured
+upd_alert_enable
 
 set +x
 clear
@@ -3169,6 +3244,7 @@ printf "                  ${RED}%s${NC}\n           \n" "De mo Menu su dung lenh
 printf "==========================================================================\n"
 printf "Che do cai dat               : %s\n" "${INSTALL_MODE}"
 printf "IP Server                    : %s\n" "${IPADDRESS}"
+printf "Web server                   : %s\n" "${WEBSERVER}"
 printf "SSH  Port                    : %s\n" "${SSH_PORT}"
 printf "PHP                          : %s %s\n" "${PHP_VERSION}" "${PHP_VERSION_2}"
 printf "phpMyAdmin                   : %s\n" "http://${IPADDRESS}:${RANDOM_ADMIN_PORT}/phpmyadmin"
@@ -3180,6 +3256,7 @@ printf "CrowdSec                     : %s\n" "${CROWDSEC_STATUS}"
 printf "AppSec (WAF)                 : %s\n" "${APPSEC_STATUS}"
 printf "Access log                   : %s\n" "${ACCESS_LOG_STATUS}"
 printf "Telegram notify              : %s\n" "${TELEGRAM_STATUS}"
+printf "Canh bao cap nhat            : %s\n" "Kiem tra hang ngay (menu hostvn -> 14)"
 printf "=========================================================================\n"
 
 if [ "${INSTALL_MODE}" == "dev" ]; then

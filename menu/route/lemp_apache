@@ -1,0 +1,106 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Apache manager.
+#   webserver=apache : Apache is the web server
+#   webserver=nginx  : Apache can run behind Nginx for the websites that need .htaccess
+
+CHOICE=1
+
+_ap_menu_status() {
+    if ! ap_installed; then
+        printf "%sApache: chua cai dat%s\n" "${RED}" "${NC}"
+    elif systemctl is-active --quiet "${AP_SERVICE}"; then
+        printf "%sApache %s: Active%s\n" "${GREEN}" "$(ap_version)" "${NC}"
+    else
+        printf "%sApache %s: Inactive (Dead)%s\n" "${RED}" "$(ap_version)" "${NC}"
+    fi
+}
+
+_ap_menu_restart() {
+    if ap_test; then
+        systemctl restart "${AP_SERVICE}"
+        clear
+        printf "%s\n" "${GREEN}Restart Apache thanh cong.${NC}"
+    else
+        printf "%s\n" "${RED}Cau hinh Apache bi loi, chua restart.${NC}"
+    fi
+}
+
+_ap_menu_retune() {
+    local mode="backend"
+    ws_is_apache && mode="standalone"
+    ap_write_global "${mode}" "$(ap_backend_port)"
+    if ap_reload; then
+        clear
+        printf "%s\n" "${GREEN}Da tinh lai so worker cua Apache theo RAM hien tai ($(_ap_servers "${mode}") process x 25 thread).${NC}"
+    else
+        printf "%s\n" "${RED}Cau hinh Apache bi loi.${NC}"
+    fi
+}
+
+printf "%s=============================%s\n" "${GREEN}" "${NC}"
+printf "%s       Apache Manager        %s\n" "${GREEN}" "${NC}"
+printf "%s=============================%s\n" "${GREEN}" "${NC}"
+_ap_menu_status
+if ! ws_is_apache; then
+    printf "%sChe do: Nginx phia truoc, Apache phia sau (127.0.0.1:%s)%s\n" "${GREEN}" "$(ap_backend_port)" "${NC}"
+    if ap_backend_enabled; then
+        printf "%sWebsite dang dung Apache: %s%s\n" "${GREEN}" "$(ap_backend_sites | tr '\n' ' ')" "${NC}"
+    fi
+fi
+printf "%s=============================%s\n" "${GREEN}" "${NC}"
+
+while [ "${CHOICE}" != "0" ]; do
+    if ws_is_apache; then
+        printf "%s1. Restart Apache%s\n" "${GREEN}" "${NC}"
+        printf "%s2. ${lang_test_nginx_config/Nginx/Apache}%s\n" "${GREEN}" "${NC}"
+        printf "%s3. Tinh lai cau hinh Apache theo RAM (sau khi nang cap VPS)%s\n" "${GREEN}" "${NC}"
+        printf "%s4. Cap nhat Apache%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s1. Bat Apache cho website (ho tro .htaccess)%s\n" "${GREEN}" "${NC}"
+        printf "%s2. Tat Apache cho website (tro lai Nginx + PHP-FPM)%s\n" "${GREEN}" "${NC}"
+        printf "%s3. Restart Apache%s\n" "${GREEN}" "${NC}"
+        printf "%s4. Kiem tra cau hinh Apache%s\n" "${GREEN}" "${NC}"
+        printf "%s5. Tinh lai cau hinh Apache theo RAM (sau khi nang cap VPS)%s\n" "${GREEN}" "${NC}"
+        printf "%s6. Go bo Apache%s\n" "${GREEN}" "${NC}"
+    fi
+    printf "%s=============================%s\n" "${GREEN}" "${NC}"
+    read -r -p " ${SELECT_OPTION} " CHOICE
+
+    if [ -z "${CHOICE}" ]; then
+        CHOICE=1
+        continue
+    fi
+
+    if ws_is_apache; then
+        case ${CHOICE} in
+        1) clear; _ap_menu_restart; lemp_apache ;;
+        2) clear; ap_test; echo; lemp_apache ;;
+        3) clear; _ap_menu_retune; lemp_apache ;;
+        4) clear; update_packages apache ;;
+        0) clear; menu_lemp ;;
+        *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+        esac
+    else
+        case ${CHOICE} in
+        1) clear; apache_backend enable; lemp_apache ;;
+        2) clear; apache_backend disable; lemp_apache ;;
+        3) clear; if ap_installed; then _ap_menu_restart; else printf "%s\n" "${RED}Apache chua duoc cai dat.${NC}"; fi; lemp_apache ;;
+        4) clear; if ap_installed; then ap_test; else printf "%s\n" "${RED}Apache chua duoc cai dat.${NC}"; fi; echo; lemp_apache ;;
+        5) clear; if ap_backend_enabled; then _ap_menu_retune; else printf "%s\n" "${RED}Apache chua duoc cai dat.${NC}"; fi; lemp_apache ;;
+        6) clear; apache_backend remove; lemp_apache ;;
+        0) clear; menu_lemp ;;
+        *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+        esac
+    fi
+done

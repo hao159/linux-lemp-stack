@@ -471,7 +471,9 @@ php_install() {
         esac
         [ "${ver}" == "5.6" ] && pkg_install_optional php5.6-mcrypt
         # Apache may be pulled in as a dependency of the phpX.Y meta package
-        systemctl disable --now apache2 >/dev/null 2>&1
+        if ! declare -F ap_in_use >/dev/null || ! ap_in_use; then
+            systemctl disable --now apache2 >/dev/null 2>&1
+        fi
     fi
 
     _php_service_dropin "${ver}"
@@ -511,21 +513,62 @@ php_set_default() {
     fi
 }
 
-# php_ext_install <X.Y> <igbinary|redis|memcached>  - prebuilt packages, no compiling
-php_ext_install() {
-    local ver="$1" ext="$2" nd
-    nd=$(_php_nodot "${ver}")
+# Extensions offered by the menu (PHP -> Cai dat extension), named as "php -m" prints them.
+PHP_EXT_LIST="mongodb redis memcached pgsql sqlite3 intl imagick gd zip bcmath gmp soap xsl mbstring curl iconv exif apcu igbinary msgpack ldap imap tidy yaml ssh2 uuid mailparse amqp swoole xdebug"
+
+# pkg_available <package> : the repositories have this package
+pkg_available() {
     if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -q info "$1" >/dev/null 2>&1
+    else
+        LC_ALL=C apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]'
+    fi
+}
+
+# php_ext_loaded <X.Y> <extension>
+php_ext_loaded() {
+    "php${1}" -m 2>/dev/null | grep -qix -- "$2"
+}
+
+# php_ext_packages <X.Y> <extension> : package names to try, the first one available is used.
+# Ondrej/Sury name them phpX.Y-<ext>, Remi phpXY-php-<ext> or phpXY-php-pecl-<ext>.
+php_ext_packages() {
+    local ver="$1" ext="$2" p
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        p="php$(_php_nodot "${ver}")-php"
         case "${ext}" in
-        redis)
-            pkg_install "php${nd}-php-pecl-redis6" 2>/dev/null || pkg_install "php${nd}-php-pecl-redis5" ||
-                pkg_install "php${nd}-php-pecl-redis"
-            ;;
-        *) pkg_install "php${nd}-php-pecl-${ext}" ;;
+        redis) echo "${p}-pecl-redis6 ${p}-pecl-redis5 ${p}-pecl-redis" ;;
+        imagick) echo "${p}-pecl-imagick-im7 ${p}-pecl-imagick-im6 ${p}-pecl-imagick" ;;
+        swoole) echo "${p}-pecl-swoole6 ${p}-pecl-swoole5 ${p}-pecl-swoole" ;;
+        xdebug) echo "${p}-pecl-xdebug3 ${p}-pecl-xdebug" ;;
+        imap) echo "${p}-imap ${p}-pecl-imap" ;;
+        zip) echo "${p}-pecl-zip" ;;
+        sqlite3) echo "${p}-pdo" ;;
+        xsl) echo "${p}-xml" ;;
+        curl | iconv | exif) echo "${p}-common" ;;
+        pgsql | intl | gd | bcmath | gmp | soap | mbstring | ldap | tidy) echo "${p}-${ext}" ;;
+        *) echo "${p}-pecl-${ext} ${p}-${ext}" ;;
         esac
     else
-        pkg_install "php${ver}-${ext}"
+        case "${ext}" in
+        xsl) echo "php${ver}-xml" ;;
+        iconv | exif) echo "php${ver}-common" ;;
+        *) echo "php${ver}-${ext}" ;;
+        esac
     fi
+}
+
+# php_ext_install <X.Y> <extension>  - prebuilt packages, no compiling
+# Returns 2 when no repository has a package for this extension and PHP version.
+php_ext_install() {
+    local pkg
+    for pkg in $(php_ext_packages "$1" "$2"); do
+        if pkg_available "${pkg}"; then
+            pkg_install "${pkg}"
+            return $?
+        fi
+    done
+    return 2
 }
 
 php_ext_remove() {

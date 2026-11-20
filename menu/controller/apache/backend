@@ -1,0 +1,139 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Apache behind Nginx, website by website. AP_ACTION = enable | disable | remove
+# The caller shows the next menu.
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_yes_no(){
+    local answer
+    read -r -p "$1 (y/n) " answer
+    [[ "${answer}" =~ ^([yY])$ ]]
+}
+
+# Apache is installed the first time a website needs it
+_install(){
+    local ram_mb
+    ap_backend_enabled && return 0
+
+    ram_mb=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
+    echo "Apache chua duoc cai dat. Apache se chay phia sau Nginx (chi nghe tren 127.0.0.1),"
+    echo "dung event MPM + PHP-FPM va ton them khoang 30-60 MB RAM."
+    if [ "${ram_mb}" -lt 900 ]; then
+        printf "%s\n" "${RED}VPS chi co ${ram_mb} MB RAM: chay them Apache se lam giam bo nho cho PHP va MariaDB.${NC}"
+    fi
+    if ! _yes_no "Ban co muon cai dat Apache khong ?"; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return 1
+    fi
+    printf "%s\n" "${GREEN}Dang cai dat Apache...${NC}"
+    if ! ap_install backend; then
+        ALERT=$(printf "%s" "${RED}Cai dat Apache that bai. Kiem tra: systemctl status ${AP_SERVICE}${NC}")
+        return 1
+    fi
+    return 0
+}
+
+_enable(){
+    _install || return
+    printf "%s\n" "${GREEN}Lua chon website chuyen sang Apache.${NC}"
+    _select_real_domain
+    [ -n "${ALERT}" ] && return
+    if [ -z "${domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return
+    fi
+    if ap_site_backend "${domain}"; then
+        ALERT=$(printf "%s" "${RED}Website ${domain} da dung Apache roi.${NC}")
+        return
+    fi
+    ap_backend_site_enable "${domain}"
+    case $? in
+    0)
+        ALERT=$(printf "%s" "${GREEN}Website ${domain} da chay PHP qua Apache, .htaccess co hieu luc. Nginx van phuc vu file tinh, SSL va cache.${NC}")
+        ;;
+    2)
+        ALERT=$(printf "%s" "${RED}Website ${domain} khong dung duoc Apache (website Node.js hoac vhost da bi sua tay).${NC}")
+        ;;
+    *)
+        ap_backend_site_disable "${domain}" "${TEMPLATE_DIR}" "${CUSTOM_DIR}" >/dev/null 2>&1
+        ALERT=$(printf "%s" "${RED}Khong bat duoc Apache cho ${domain}, da tra website ve Nginx. Kiem tra cau hinh Apache trong menu.${NC}")
+        ;;
+    esac
+}
+
+_select_backend_site(){
+    local sites
+    domain=""
+    # shellcheck disable=SC2207
+    sites=($(ap_backend_sites))
+    if [ "${#sites[@]}" -eq 0 ]; then
+        ALERT=$(printf "%s" "${RED}Chua co website nao dung Apache.${NC}")
+        return
+    fi
+    PS3="${INPUT_SELECT} [0 = Thoat]: "
+    select opt_site in "${sites[@]}"; do
+        domain=${opt_site}
+        break
+    done
+}
+
+_disable(){
+    if ! ap_backend_enabled; then
+        ALERT=$(printf "%s" "${RED}Apache chua duoc cai dat.${NC}")
+        return
+    fi
+    printf "%s\n" "${GREEN}Lua chon website tro lai Nginx + PHP-FPM.${NC}"
+    _select_backend_site
+    [ -n "${ALERT}" ] && return
+    if [ -z "${domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return
+    fi
+    ap_backend_site_disable "${domain}" "${TEMPLATE_DIR}" "${CUSTOM_DIR}"
+    ALERT=$(printf "%s" "${GREEN}Website ${domain} da tro lai Nginx + PHP-FPM, .htaccess khong con hieu luc.${NC}")
+}
+
+_remove(){
+    local site
+    if ! ap_backend_enabled; then
+        ALERT=$(printf "%s" "${RED}Apache chua duoc cai dat.${NC}")
+        return
+    fi
+    if [ -n "$(ap_backend_sites)" ]; then
+        echo "Cac website sau dang dung Apache va se tro lai Nginx + PHP-FPM:"
+        ap_backend_sites
+    fi
+    if ! _yes_no "Ban co muon go bo Apache khong ?"; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return
+    fi
+    for site in $(ap_backend_sites); do
+        ap_backend_site_disable "${site}" "${TEMPLATE_DIR}" "${CUSTOM_DIR}" >/dev/null 2>&1
+    done
+    ap_backend_remove >/dev/null 2>&1
+    ALERT=$(printf "%s" "${GREEN}Da go bo Apache.${NC}")
+}
+
+ALERT=''
+domain=''
+
+case ${AP_ACTION} in
+enable) _enable ;;
+disable) _disable ;;
+remove) _remove ;;
+esac
+AP_ACTION=''
+clear
+printf "%s\n" "${ALERT}"

@@ -1,0 +1,101 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Let's Encrypt for an alias domain when Apache is the web server. The alias gets its own
+# certificate in /etc/nginx/ssl/<alias>/ and its own HTTPS virtual host (ap_vhost_write).
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+# Fills alias_list with "<alias> <website>" of the alias domains without a certificate
+_list_alias(){
+    local f site name
+    alias_list=()
+    for f in "${USER_DIR}"/.*.conf; do
+        [ -f "${f}" ] || continue
+        site=${f##*/.}
+        site=${site%.conf}
+        for name in $(_ap_site_aliases "${site}"); do
+            _ap_site_cert "${name}" >/dev/null || alias_list+=("${name} ${site}")
+        done
+    done
+}
+
+_sign_ssl(){
+    rm -rf "/root/.acme.sh/${alias_domain}"
+    /root/.acme.sh/acme.sh --upgrade
+    clear
+    # www.<alias> is not requested: the DNS record often does not exist and one name
+    # that fails makes the whole request fail
+    /root/.acme.sh/acme.sh --issue -w "$(ap_site_docroot "${domain}")" -d "${alias_domain}" --server letsencrypt --force
+
+    mkdir -p "${SSL_DIR}/${alias_domain}"
+    rm -f "${SSL_DIR}/${alias_domain}/key.pem" "${SSL_DIR}/${alias_domain}/cert.pem"
+    /root/.acme.sh/acme.sh --install-cert -d "${alias_domain}" \
+        --key-file "${SSL_DIR}/${alias_domain}/key.pem" \
+        --fullchain-file "${SSL_DIR}/${alias_domain}/cert.pem" \
+        --reloadcmd "systemctl reload ${AP_SERVICE}"
+}
+
+_run(){
+    local prompt_ssl
+    printf "${RED}%s${NC}\n" "Luu y: Let's Encrypt gioi han so request SSL, ten mien phai tro ve IP cua VPS truoc."
+    read -r -p "Ban muon cai dat SSL cho Alias Domain ${alias_domain} (website ${domain}) ? (y/n) " prompt_ssl
+    if [[ ! "${prompt_ssl}" =~ ^([yY])$ ]]; then
+        ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}")
+        return
+    fi
+    check_nginx_status
+    [ -z "${ALERT}" ] && check_a_record "${alias_domain}"
+    [ -z "${ALERT}" ] || return
+
+    _sign_ssl
+    if [ ! -s "${SSL_DIR}/${alias_domain}/key.pem" ] || [ ! -s "${SSL_DIR}/${alias_domain}/cert.pem" ]; then
+        rm -rf "${SSL_DIR:?}/${alias_domain}"
+        ALERT=$(printf "%s" "${RED}Cau hinh SSL that bai. Vui long kiem tra ten mien da tro ve VPS chua.${NC}")
+        return
+    fi
+    ap_vhost_write "${domain}"
+    if ap_test >/dev/null 2>&1; then
+        ap_reload
+        ALERT=$(printf "%s" "${GREEN}Cau hinh SSL cho ${alias_domain} thanh cong.${NC}")
+    else
+        ALERT=$(printf "%s" "${RED}${lang_error_vhost}${NC}")
+    fi
+}
+
+ALERT=''
+domain=''
+alias_domain=''
+alias_list=()
+
+_list_alias
+if [ "${#alias_list[@]}" -eq 0 ]; then
+    ALERT=$(printf "%s" "${RED}Khong co Alias Domain nao chua cau hinh SSL.${NC}")
+else
+    echo "Lua chon Alias Domain"
+    PS3="${INPUT_SELECT} [0 = Thoat]: "
+    select opt_alias in "${alias_list[@]}"; do
+        alias_domain=${opt_alias% *}
+        domain=${opt_alias#* }
+        break
+    done
+    if [ -z "${alias_domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}")
+    else
+        _run
+    fi
+fi
+
+clear
+printf "%s\n" "${ALERT}"
+ssl_le

@@ -24,6 +24,7 @@ do
     printf "%s4. Notify Disk Usage%s\n" "${GREEN}" "${NC}"
     printf "%s5. Bat/Tat Notify CrowdSec (IP bi chan)%s\n" "${GREEN}" "${NC}"
     printf "%s6. Delete notify%s\n" "${GREEN}" "${NC}"
+    printf "%s7. Bat/Tat canh bao cap nhat (Nginx, PHP, MariaDB ...)%s\n" "${GREEN}" "${NC}"
     printf "%s========================================%s\n" "${GREEN}" "${NC}"
     read -r -p " ${SELECT_OPTION} " CHOICE
     if [ -z "${CHOICE}" ]
@@ -38,6 +39,7 @@ do
         4) clear; telegram_disk_notify ;;
         5) clear; telegram_crowdsec_notify ;;
         6) clear; telegram_delete_notify ;;
+        7) clear; update_alert; telegram_notify ;;
         0) clear; menu_tools ;;
         *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
     esac

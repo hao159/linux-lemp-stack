@@ -158,6 +158,11 @@ END
 }
 
 _create_vhost() {
+    if ws_is_apache; then
+        # writes the default .htaccess of WordPress and the virtual host
+        ap_site_setup "${domain}" wordpress "${TEMPLATE_DIR}"
+        return
+    fi
     rm -rf "${VHOST_DIR}"/"${domain}".conf
 
     if [ -f "${CUSTOM_DIR}/wordpress.conf" ]; then

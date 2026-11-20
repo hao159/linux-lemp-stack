@@ -10,6 +10,28 @@
 #  Please do not copy under any circumstance for commercial reason!  #
 ######################################################################
 
+# Screens that write Nginx directives (vhost includes, FastCGI cache, Lua ...). When Apache
+# is the web server the menu says so and shows the menu given as argument again.
+_nginx_only(){
+    ws_is_apache || return 0
+    clear
+    printf "%s\n" "${RED}Chuc nang nay chi co voi Nginx, server dang dung Apache.${NC}"
+    echo
+    "$1"
+    return 1
+}
+
+# Screens that only add the Nginx rules of a WordPress plugin. With Apache the plugin
+# writes its own rules in .htaccess, there is nothing to configure.
+_apache_plugin_rules(){
+    ws_is_apache || return 0
+    clear
+    printf "%s\n" "${GREEN}Voi Apache, plugin tu ghi luat vao .htaccess cua website: khong can cau hinh them.${NC}"
+    echo
+    "$1"
+    return 1
+}
+
 menu_primary(){
     hostvn
 }
@@ -39,11 +61,19 @@ domain_rewrite_config(){
 }
 
 domain_alias(){
-    . /var/hostvn/menu/controller/domain/alias_domain
+    if ws_is_apache; then
+        . /var/hostvn/menu/controller/apache/alias
+    else
+        . /var/hostvn/menu/controller/domain/alias_domain
+    fi
 }
 
 domain_redirect(){
-    . /var/hostvn/menu/controller/domain/redirect_domain
+    if ws_is_apache; then
+        . /var/hostvn/menu/controller/apache/redirect
+    else
+        . /var/hostvn/menu/controller/domain/redirect_domain
+    fi
 }
 
 domain_change_php_version(){
@@ -63,7 +93,11 @@ domain_change_pass_sftp(){
 }
 
 domain_protect_dir(){
-    . /var/hostvn/menu/controller/domain/protect_dir
+    if ws_is_apache; then
+        . /var/hostvn/menu/controller/apache/protect_dir
+    else
+        . /var/hostvn/menu/controller/domain/protect_dir
+    fi
 }
 
 menu_ssl(){
@@ -83,7 +117,11 @@ ssl_le_create(){
 }
 
 ssl_le_alias_domain(){
-    . /var/hostvn/menu/controller/ssl/le_alias_domain
+    if ws_is_apache; then
+        . /var/hostvn/menu/controller/apache/alias_ssl
+    else
+        . /var/hostvn/menu/controller/ssl/le_alias_domain
+    fi
 }
 
 ssl_le_remove(){
@@ -123,6 +161,7 @@ cache_clear_cache(){
 }
 
 cache_fastcgi(){
+    _nginx_only menu_cache || return
     . /var/hostvn/menu/controller/cache/nginx_cache
 }
 
@@ -143,7 +182,21 @@ menu_lemp(){
 }
 
 lemp_nginx(){
-    . /var/hostvn/menu/route/lemp_nginx
+    if ws_is_apache; then
+        . /var/hostvn/menu/route/lemp_apache
+    else
+        . /var/hostvn/menu/route/lemp_nginx
+    fi
+}
+
+lemp_apache(){
+    . /var/hostvn/menu/route/lemp_apache
+}
+
+# apache_backend <enable|disable|remove> : Apache behind Nginx for one website
+apache_backend(){
+    AP_ACTION="$1"
+    . /var/hostvn/menu/controller/apache/backend
 }
 
 lemp_php(){
@@ -180,6 +233,10 @@ lemp_php_process_manager(){
 
 lemp_php_allow_url_fopen(){
     . /var/hostvn/menu/controller/php/allow_url_fopen
+}
+
+lemp_php_install_extension(){
+    . /var/hostvn/menu/controller/php/install_extension
 }
 
 lemp_php_allow_proc_close(){
@@ -270,8 +327,18 @@ wordpress_move_wp_config(){
     . /var/hostvn/menu/controller/wordpress/move_wp_config
 }
 
+# apache_wp_security <xmlrpc|user_api|wp_admin>
+apache_wp_security(){
+    AP_WP_ACTION="$1"
+    . /var/hostvn/menu/controller/apache/wp_security
+}
+
 wordpress_htpasswd_wp_admin(){
-    . /var/hostvn/menu/controller/wordpress/htpasswd_wp_admin
+    if ws_is_apache; then
+        apache_wp_security wp_admin
+    else
+        . /var/hostvn/menu/controller/wordpress/htpasswd_wp_admin
+    fi
 }
 
 wordpress_disable_edit_theme_plugins(){
@@ -287,18 +354,22 @@ wordpress_advanced_menu(){
 }
 
 wordpress_yoast_seo(){
+    _apache_plugin_rules menu_wordpress || return
     . /var/hostvn/menu/controller/wordpress/yoast_seo
 }
 
 wordpress_rank_math_seo(){
+    _apache_plugin_rules menu_wordpress || return
     . /var/hostvn/menu/controller/wordpress/rank_math_seo
 }
 
 wordpress_plugin_cache(){
+    _apache_plugin_rules menu_wordpress || return
     . /var/hostvn/menu/controller/wordpress/cache_plugins
 }
 
 wordpress_webp_express(){
+    _apache_plugin_rules menu_wordpress || return
     . /var/hostvn/menu/controller/wordpress/webp_express
 }
 
@@ -315,11 +386,19 @@ wordpress_maintenance(){
 }
 
 wordpress_xmlrpc(){
-    . /var/hostvn/menu/controller/wordpress/disable_xmlrpc
+    if ws_is_apache; then
+        apache_wp_security xmlrpc
+    else
+        . /var/hostvn/menu/controller/wordpress/disable_xmlrpc
+    fi
 }
 
 wordpress_user_api(){
-    . /var/hostvn/menu/controller/wordpress/disable_user_api
+    if ws_is_apache; then
+        apache_wp_security user_api
+    else
+        . /var/hostvn/menu/controller/wordpress/disable_user_api
+    fi
 }
 
 wordpress_cron(){
@@ -415,6 +494,7 @@ move_vps(){
 }
 
 convert_vpssim(){
+    _nginx_only menu_vps_manage || return
     . /var/hostvn/menu/controller/vps/vpssim
 }
 
@@ -498,6 +578,30 @@ update_script(){
     . /var/hostvn/menu/controller/vps/update_scripts
 }
 
+menu_update(){
+    . /var/hostvn/menu/route/update
+}
+
+update_check(){
+    . /var/hostvn/menu/controller/update/check
+}
+
+# update_nginx [rebuild]
+update_nginx(){
+    UPD_NGINX_MODE="$1"
+    . /var/hostvn/menu/controller/update/nginx
+}
+
+# update_packages <php|mariadb|crowdsec|system>
+update_packages(){
+    UPD_TARGET="$1"
+    . /var/hostvn/menu/controller/update/packages
+}
+
+update_alert(){
+    . /var/hostvn/menu/controller/update/alert
+}
+
 change_language(){
     . /var/hostvn/menu/controller/vps/change_language
 }
@@ -539,6 +643,8 @@ crowdsec_install(){
 }
 
 crowdsec_appsec(){
+    # AppSec runs in the Nginx Lua bouncer, CrowdSec has no equivalent for Apache
+    _nginx_only menu_crowdsec || return
     . /var/hostvn/menu/controller/crowdsec/appsec
 }
 

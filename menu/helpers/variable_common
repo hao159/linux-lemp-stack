@@ -24,6 +24,9 @@ AUTHOR_WEB="HOSTVN.VN"
 # OS abstraction layer (package manager, firewall, PHP paths ...)
 # shellcheck source=/var/hostvn/menu/helpers/os
 source /var/hostvn/menu/helpers/os
+# Web server of this installation (nginx or apache) and Apache behind Nginx
+# shellcheck source=/var/hostvn/menu/helpers/apache
+source /var/hostvn/menu/helpers/apache
 HOMEPAGE_LINK="https://github.com/${REPO_SLUG}"
 # ${UPDATE_LINK}/version is the version file of the repository
 UPDATE_LINK="${REPO_RAW}"
@@ -48,3 +51,33 @@ WORDPRESS_CRON_DIR="/var/hostvn/wpcron"
 RULE_FILE="${BASH_DIR}/menu/validate/rule"
 RCLONE_CONF="/root/.config/rclone/rclone.conf"
 PLUGINS_LIST=("really-simple-ssl" "wps-hide-login" "wps-limit-login" "seo-by-rank-math")
+
+# Web server. "webserver=" in ${FILE_INFO} is nginx (default) or apache.
+WS_ERROR_LOG="/var/log/nginx/error.log"
+if ws_is_apache; then
+    # The menu was written for Nginx. With Apache the vhost folder points to the Apache
+    # one, and "nginx -t" / "systemctl <action> nginx" are mapped to Apache, so every screen
+    # that only tests and restarts the web server works unchanged. The screens that write
+    # Nginx directives are stopped by _nginx_only or replaced (menu/route/parent).
+    VHOST_DIR="${AP_VHOST_DIR}"
+    WS_ERROR_LOG="${AP_ERROR_LOG}"
+
+    nginx() {
+        case "$1" in
+        -t) ap_test ;;
+        -v) echo "Apache/$(ap_version)" >&2 ;;
+        *) return 1 ;;
+        esac
+    }
+
+    systemctl() {
+        local arg args=()
+        for arg in "$@"; do
+            case "${arg}" in
+            nginx | nginx.service) arg="${AP_SERVICE}" ;;
+            esac
+            args+=("${arg}")
+        done
+        command systemctl "${args[@]}"
+    }
+fi

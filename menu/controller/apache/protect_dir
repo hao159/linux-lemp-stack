@@ -1,0 +1,151 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Password for a folder of a website when Apache is the web server: a block in the
+# .htaccess of the folder. The password file is the one the Nginx version uses.
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+_select_action(){
+    PS3="Nhap vao lua chon cua ban [ 1 - 4 ]: "
+    select opt_action in "Bao ve thu muc" "Tat bao ve thu muc" "Doi mat khau" "Cancel"; do
+        case $REPLY in
+        1) action="enable"; break ;;
+        2) action="disable"; break ;;
+        3) action="password"; break ;;
+        4) action="cancel"; break ;;
+        *) printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+        esac
+    done
+}
+
+_set_var(){
+    user=$(_ap_site "${domain}" username)
+    docroot=$(ap_site_docroot "${domain}")
+    protect_dir="/home/${user}/${domain}/htpasswd/protect_folder"
+    htpasswd_file="${protect_dir}/.htpasswd"
+    list_file="${protect_dir}/.protect.list"
+}
+
+_set_password(){
+    mkdir -p "${protect_dir}"
+    htpasswd -b -c "${htpasswd_file}" "$1" "$2" >/dev/null 2>&1
+    chmod 644 "${htpasswd_file}"
+    sed -i '/^htpasswd_user=/d; /^htpasswd_passwd=/d' "${USER_DIR}/.${domain}.conf"
+    echo "htpasswd_user=$1" >>"${USER_DIR}/.${domain}.conf"
+    echo "htpasswd_passwd=$2" >>"${USER_DIR}/.${domain}.conf"
+}
+
+_enable(){
+    local path htpasswd_user htpasswd_passwd
+    read -r -p "Nhap vao duong dan muon bao ve (VD: /upload, /upload/image): " path
+    path="/${path#/}"
+    path=${path%/}
+    if [ -z "${path}" ] || [[ "${path}" == *".."* ]] || [[ ! "${path}" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+        ALERT=$(printf "%s" "${RED}Duong dan khong chinh xac.${NC}")
+        return
+    fi
+    if [[ "${path}" == *"wp-admin"* ]]; then
+        ALERT=$(printf "%s" "${RED}De bao ve wp-admin vui long su dung menu WordPress.${NC}")
+        return
+    fi
+    if [ ! -d "${docroot}${path}" ]; then
+        ALERT=$(printf "%s" "${RED}Thu muc ${docroot}${path} khong ton tai.${NC}")
+        return
+    fi
+    if [ ! -f "${htpasswd_file}" ]; then
+        read -r -p "Nhap vao user: " htpasswd_user
+        read -r -p "Nhap vao mat khau: " htpasswd_passwd
+        if [ -z "${htpasswd_user}" ] || [ -z "${htpasswd_passwd}" ]; then
+            ALERT=$(printf "%s" "${RED}User va mat khau khong duoc de trong.${NC}")
+            return
+        fi
+        _set_password "${htpasswd_user}" "${htpasswd_passwd}"
+    fi
+    ap_htaccess_block "${docroot}${path}/.htaccess" protect <<END
+AuthType Basic
+AuthName "Prohibited Area"
+AuthUserFile ${htpasswd_file}
+Require valid-user
+END
+    grep -qsxF "${path}" "${list_file}" || echo "${path}" >>"${list_file}"
+    ALERT=$(printf "%s\n%s\n%s" "${GREEN}Cau hinh bao ve thu muc thanh cong.${NC}" \
+        "${GREEN}User bao ve thu muc: $(_ap_site "${domain}" htpasswd_user)${NC}" \
+        "${GREEN}Mat khau bao ve thu muc: $(_ap_site "${domain}" htpasswd_passwd)${NC}")
+}
+
+_disable(){
+    local list=() line path=""
+    if [ -f "${list_file}" ]; then
+        while IFS= read -r line; do
+            [ -n "${line}" ] && list+=("${line}")
+        done <"${list_file}"
+    fi
+    if [ "${#list[@]}" -eq 0 ]; then
+        ALERT=$(printf "%s" "${RED}Ban chua cau hinh bao ve thu muc.${NC}")
+        return
+    fi
+    echo "Chon duong dan muon xoa bao ve"
+    PS3="Nhap vao lua chon cua ban [0 = thoat]: "
+    select opt_dir in "${list[@]}"; do
+        path=${opt_dir}
+        break
+    done
+    if [ -z "${path}" ]; then
+        ALERT=$(printf "%s" "${RED}Huy bo thao tac.${NC}")
+        return
+    fi
+    ap_htaccess_block "${docroot}${path}/.htaccess" protect </dev/null
+    grep -vxF "${path}" "${list_file}" >"${list_file}.tmp"
+    mv "${list_file}.tmp" "${list_file}"
+    ALERT=$(printf "%s" "${GREEN}Xoa bao ve thu muc thanh cong.${NC}")
+}
+
+_password(){
+    local new_pass
+    if [ ! -f "${htpasswd_file}" ]; then
+        ALERT=$(printf "%s" "${RED}Ban chua cau hinh bao ve thu muc.${NC}")
+        return
+    fi
+    read -r -p "Nhap vao mat khau moi: " new_pass
+    if [ -z "${new_pass}" ]; then
+        ALERT=$(printf "%s" "${RED}Mat khau khong duoc de trong.${NC}")
+        return
+    fi
+    _set_password "$(_ap_site "${domain}" htpasswd_user)" "${new_pass}"
+    ALERT=$(printf "%s" "${GREEN}Doi mat khau thanh cong.${NC}")
+}
+
+ALERT=''
+domain=''
+action=''
+
+_select_domain
+if [ -z "${ALERT}" ]; then
+    if [ -z "${domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}")
+    else
+        _select_action
+        _set_var
+        case "${action}" in
+        enable) _enable ;;
+        disable) _disable ;;
+        password) _password ;;
+        *) ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}") ;;
+        esac
+    fi
+fi
+
+clear
+printf "%s\n" "${ALERT}"
+menu_domain

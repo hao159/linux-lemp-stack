@@ -208,7 +208,24 @@ _copy_htpasswd() {
     fi
 }
 
+# Apache: the rewrite rules are in .htaccess (not copied by "cp public_html/*"), the virtual
+# host is written from the source code of the source website.
+_copy_vhost_apache() {
+    local src="/home/${user_source}/${source_domain}/public_html" dst="/home/${user_clone}/${clone_domain}/public_html"
+    if [ -f "${src}/.htaccess" ]; then
+        # the blocks written by the menu point to the password files of the source website
+        sed '/^# BEGIN hostvn /,/^# END hostvn /d' "${src}/.htaccess" >"${dst}/.htaccess"
+        chown "${user_clone}":"${user_clone}" "${dst}/.htaccess"
+        chmod 644 "${dst}/.htaccess"
+    fi
+    ap_site_setup "${clone_domain}" "$(_ap_site "${source_domain}" source)" "${TEMPLATE_DIR}" "$(_ap_site "${clone_domain}" proxy_port)"
+}
+
 _copy_vhost() {
+    if ws_is_apache; then
+        _copy_vhost_apache
+        return
+    fi
     rm -rf "${VHOST_DIR}"/"${clone_domain}".conf
     cp "${VHOST_DIR}"/"${source_domain}".conf "${VHOST_DIR}"/"${clone_domain}".conf
 

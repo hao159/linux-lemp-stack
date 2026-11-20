@@ -1,0 +1,46 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Daily check for updates: banner in the hostvn menu + Telegram message.
+# Called from the update menu and from the Telegram menu, the caller shows the next menu.
+
+source /var/hostvn/menu/helpers/telegram
+source /var/hostvn/menu/helpers/update
+
+_run(){
+    if upd_alert_enabled; then
+        read -r -p "Canh bao cap nhat dang bat. Ban co muon tat khong ? (y/n) " prompt_upd_alert
+        if [[ "${prompt_upd_alert}" =~ ^([yY])$ ]]; then
+            upd_alert_disable
+            ALERT=$(printf "%s" "${GREEN}Tat canh bao cap nhat thanh cong.${NC}")
+        else
+            ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        fi
+        return
+    fi
+
+    upd_alert_enable
+    if tg_configured; then
+        ALERT=$(printf "%s" "${GREEN}Bat canh bao cap nhat thanh cong. Moi ngay VPS tu kiem tra, ket qua hien o menu hostvn va gui ve Telegram.${NC}")
+    else
+        ALERT=$(printf "%s" "${GREEN}Bat canh bao cap nhat thanh cong. Moi ngay VPS tu kiem tra, ket qua hien o menu hostvn. Cau hinh Telegram (Cong cu -> Telegram notify) de nhan tin nhan.${NC}")
+    fi
+    # first result now, without waiting for the cron
+    (bash "${UPD_CRON}" >/dev/null 2>&1 &)
+}
+
+ALERT=''
+prompt_upd_alert=''
+
+_run
+clear
+printf "%s\n" "${ALERT}"

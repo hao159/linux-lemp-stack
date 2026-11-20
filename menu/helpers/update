@@ -1,0 +1,347 @@
+#!/bin/bash
+
+######################################################################
+#   Update helper - shared by the installer, menu and cronjobs       #
+#                                                                    #
+#  Nginx is built from source: a newer release is looked up on       #
+#  nginx.org (same branch as the version pinned in the version file) #
+#  and installed with a rollback of the binary when it fails.        #
+#  PHP, MariaDB, CrowdSec ... are packages: they are upgraded with   #
+#  apt/dnf from the repositories configured at install time.         #
+#                                                                    #
+#  Requires menu/helpers/os loaded. upd_notify needs helpers/telegram #
+######################################################################
+
+# shellcheck disable=SC2034
+
+UPD_DIR="/var/hostvn/update"
+# Summary of what should be updated, shown in the menu. Empty = nothing important.
+UPD_PENDING="${UPD_DIR}/pending"
+UPD_NOTIFIED="${UPD_DIR}/notified"
+UPD_CRON="/var/hostvn/menu/cronjob/update_check"
+UPD_NGINX_BIN="/usr/sbin/nginx"
+UPD_NGINX_BAK="/usr/sbin/nginx.hostvn.bak"
+UPD_NGINX_LOG="/var/log/hostvn/nginx_build.log"
+UPD_FILE_INFO="/var/hostvn/.hostvn.conf"
+
+# label=regex on the package name
+UPD_GROUPS=(
+    "Apache=^(apache2|httpd|mod_ssl|mod_http2|libapr|apr)"
+    "PHP=^php"
+    "MariaDB=^(mariadb|MariaDB|galera|libmariadb)"
+    "CrowdSec=^crowdsec"
+    "Redis/Memcached=^(redis|valkey|memcached)"
+    "OpenSSL/OpenSSH=^(openssl|libssl|openssh)"
+)
+
+# upd_group_regex <php|mariadb|crowdsec>
+upd_group_regex() {
+    local item
+    for item in "${UPD_GROUPS[@]}"; do
+        if [ "$(echo "${item%%=*}" | tr '[:upper:]' '[:lower:]')" == "$1" ]; then
+            echo "${item#*=}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# upd_ver_gt <a> <b> : a is newer than b
+upd_ver_gt() {
+    [ -n "$1" ] && [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]
+}
+
+############################################
+# Nginx
+############################################
+upd_nginx_current() {
+    nginx -v 2>&1 | grep -o '[0-9.]*$'
+}
+
+# Newest release of the branch pinned in the version file (ex: 1.30.x).
+# A security release is found on nginx.org without waiting for a new version file,
+# another branch is only used after the version file moved to it.
+upd_nginx_latest() {
+    local pinned branch upstream
+    pinned=$(get_version nginx_new_version)
+    [[ "${pinned}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    branch=${pinned%.*}
+    upstream=$(curl -s -m 15 "https://nginx.org/download/" 2>/dev/null |
+        grep -oE "nginx-${branch//./\\.}\.[0-9]+\.tar\.gz" |
+        sed -e 's/^nginx-//' -e 's/\.tar\.gz$//' | sort -uV | tail -n1)
+    if upd_ver_gt "${upstream}" "${pinned}"; then
+        echo "${upstream}"
+    else
+        echo "${pinned}"
+    fi
+}
+
+_upd_nginx_restore() {
+    [ -f "${UPD_NGINX_BAK}" ] || return 1
+    cmp -s "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}" && return 0
+    # rename instead of overwrite: the binary is running
+    cp -p "${UPD_NGINX_BAK}" "${UPD_NGINX_BIN}.hostvn.new" &&
+        mv -f "${UPD_NGINX_BIN}.hostvn.new" "${UPD_NGINX_BIN}"
+}
+
+# upd_nginx_install <version> : build and switch to this version (also used to rebuild).
+# The running Nginx is only touched when the build is finished.
+# Returns 0 = done
+#         1 = build failed                              (old binary kept)
+#         2 = the new binary refuses the configuration  (old binary restored)
+#         3 = Nginx does not start with the new binary  (old binary restored and started)
+#         4 = the current configuration is already broken, nothing was done
+upd_nginx_install() {
+    local ver="$1"
+    [ -n "${ver}" ] || return 1
+    nginx -t >/dev/null 2>&1 || return 4
+
+    mkdir -p "$(dirname "${UPD_NGINX_LOG}")"
+    cp -p "${UPD_NGINX_BIN}" "${UPD_NGINX_BAK}" || return 1
+
+    if ! (nginx_build "${ver}") >"${UPD_NGINX_LOG}" 2>&1; then
+        _upd_nginx_restore
+        return 1
+    fi
+    if ! nginx -t >>"${UPD_NGINX_LOG}" 2>&1; then
+        _upd_nginx_restore
+        return 2
+    fi
+    systemctl restart nginx
+    sleep 1
+    if ! systemctl is-active --quiet nginx; then
+        _upd_nginx_restore
+        systemctl restart nginx
+        return 3
+    fi
+    return 0
+}
+
+############################################
+# Packages
+############################################
+upd_pkg_refresh() {
+    pkg_update >/dev/null 2>&1
+}
+
+# Parsers, one line per package: <name> <installed> <candidate> <security 0|1>
+_upd_parse_apt() {
+    awk '/^Inst / {
+        # Inst <name> [<installed>] (<candidate> <origin> [<arch>])
+        # no installed version = new dependency, not an update
+        if ($3 !~ /^\[.*\]$/) next
+        name = $2; old = substr($3, 2, length($3) - 2); new = $4; sec = 0
+        sub(/^\(/, "", new)
+        if (tolower($0) ~ /security/) sec = 1
+        print name, old, new, sec
+    }'
+}
+
+# _upd_parse_dnf <NVRA list of the security updates> , reads "dnf check-update"
+_upd_parse_dnf() {
+    awk -v sec="$1" '
+        BEGIN { n = split(sec, a, "\n"); for (i = 1; i <= n; i++) s[a[i]] = 1 }
+        /^Obsoleting/ { exit }
+        NF == 0 || /^Security:/ || /^Last metadata/ { next }
+        # a long name is wrapped on two lines
+        NF == 1 && $1 ~ /\./ { hold = $1; next }
+        hold != "" { $0 = hold " " $0; hold = "" }
+        NF == 3 && $1 ~ /\./ {
+            name = $1; arch = $1
+            sub(/\.[^.]*$/, "", name); sub(/^.*\./, "", arch)
+            ver = $2; sub(/^[0-9]+:/, "", ver)
+            print name, "-", $2, ((name "-" ver "." arch) in s) ? 1 : 0
+        }'
+}
+
+# List the packages that have a newer version: <name> <installed> <candidate> <security 0|1>
+upd_pkg_pending() {
+    local sec name old new flag
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        sec=$(LC_ALL=C dnf -q updateinfo list --security 2>/dev/null | awk '{print $NF}')
+        LC_ALL=C dnf -q check-update 2>/dev/null | _upd_parse_dnf "${sec}" |
+            while read -r name old new flag; do
+                old=$(rpm -q --qf '%{VERSION}-%{RELEASE}\n' "${name}" 2>/dev/null | tail -n1)
+                echo "${name} ${old:--} ${new} ${flag}"
+            done
+    else
+        # dist-upgrade: also lists the updates that need a new dependency
+        LC_ALL=C apt-get -s dist-upgrade 2>/dev/null | _upd_parse_apt
+    fi
+}
+
+# upd_pkg_upgrade_match <regex> : upgrade the installed packages whose name matches.
+# Returns 2 when there is nothing to upgrade. Modified config files are kept.
+upd_pkg_upgrade_match() {
+    local pkgs
+    pkgs=$(upd_pkg_pending | awk -v re="$1" '$1 ~ re {print $1}')
+    [ -n "${pkgs}" ] || return 2
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        # shellcheck disable=SC2086
+        dnf -y upgrade ${pkgs}
+    else
+        # shellcheck disable=SC2086
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --only-upgrade \
+            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold ${pkgs}
+    fi
+}
+
+# Every package of the operating system
+upd_system_upgrade() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        dnf -y upgrade
+    else
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get upgrade -y \
+            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+    fi
+}
+
+upd_reboot_required() {
+    if [ "${OS_FAMILY}" == "rhel" ]; then
+        command -v needs-restarting >/dev/null 2>&1 && ! needs-restarting -r >/dev/null 2>&1
+    else
+        [ -f /var/run/reboot-required ]
+    fi
+}
+
+############################################
+# Services
+############################################
+_upd_info() {
+    grep -w "$1" "${UPD_FILE_INFO}" 2>/dev/null | cut -f2 -d'='
+}
+
+upd_php_services() {
+    local v1 v2
+    v1=$(_upd_info php1_version)
+    v2=$(_upd_info php2_version)
+    [ -n "${v1}" ] && php_service "${v1}"
+    if [ -n "${v2}" ] && [ "$(_upd_info php2_release)" == "yes" ]; then
+        php_service "${v2}"
+    fi
+}
+
+# Print the services of the stack that are not running
+upd_services_down() {
+    local svc down=""
+    local ws="nginx"
+    if declare -F ws_service >/dev/null; then
+        ws=$(ws_service)
+        # Apache behind Nginx
+        if [ "${ws}" == "nginx" ] && ap_backend_enabled; then
+            ws="nginx ${AP_SERVICE}"
+        fi
+    fi
+    for svc in ${ws} mariadb $(upd_php_services); do
+        systemctl is-active --quiet "${svc}" || down="${down} ${svc}"
+    done
+    for svc in crowdsec crowdsec-firewall-bouncer; do
+        if systemctl is-enabled --quiet "${svc}" 2>/dev/null && ! systemctl is-active --quiet "${svc}"; then
+            down="${down} ${svc}"
+        fi
+    done
+    echo "${down# }"
+}
+
+############################################
+# Check
+############################################
+_upd_add() {
+    UPD_SUMMARY="${UPD_SUMMARY}${1}"$'\n'
+    [ "$2" == "important" ] && UPD_IMPORTANT="${UPD_IMPORTANT}${1}"$'\n'
+}
+
+# upd_check [refresh] : look for updates, "refresh" downloads the package lists first.
+# Sets UPD_SUMMARY (everything) and UPD_IMPORTANT (Nginx, PHP, MariaDB, CrowdSec ...,
+# security updates, script) and writes UPD_PENDING for the menu.
+upd_check() {
+    local cur new pending item label re rows cnt ex total sec
+    UPD_SUMMARY=""
+    UPD_IMPORTANT=""
+    mkdir -p "${UPD_DIR}"
+    [ "$1" == "refresh" ] && upd_pkg_refresh
+
+    # Nginx is built from source; Apache comes from packages and is in the groups below
+    cur=""
+    new=""
+    if [ -x "${UPD_NGINX_BIN}" ]; then
+        cur=$("${UPD_NGINX_BIN}" -v 2>&1 | grep -o '[0-9.]*$')
+        new=$(upd_nginx_latest)
+    fi
+    if [ -n "${cur}" ] && upd_ver_gt "${new}" "${cur}"; then
+        _upd_add "Nginx: ${cur} -> ${new}" important
+    fi
+
+    pending=$(upd_pkg_pending)
+    if [ -n "${pending}" ]; then
+        for item in "${UPD_GROUPS[@]}"; do
+            label=${item%%=*}
+            re=${item#*=}
+            rows=$(awk -v re="${re}" '$1 ~ re' <<<"${pending}")
+            [ -n "${rows}" ] || continue
+            cnt=$(grep -c '' <<<"${rows}")
+            # the server package tells more than a library
+            ex=$(awk '$1 ~ /fpm|server|^crowdsec$|^openssl$/ {print; exit}' <<<"${rows}")
+            [ -n "${ex}" ] || ex=$(head -n1 <<<"${rows}")
+            _upd_add "${label}: ${cnt} goi ($(awk '{print $1 " " $2 " -> " $3}' <<<"${ex}"))" important
+        done
+
+        total=$(grep -c '' <<<"${pending}")
+        sec=$(awk '$4 == 1' <<<"${pending}" | grep -c '')
+        if [ "${sec}" -gt 0 ]; then
+            _upd_add "He dieu hanh: ${total} goi co ban moi, trong do ${sec} goi la ban va bao mat" important
+        else
+            _upd_add "He dieu hanh: ${total} goi co ban moi"
+        fi
+    fi
+
+    cur=$(_upd_info script_version)
+    new=$(get_version script_version)
+    if [ -n "${cur}" ] && upd_ver_gt "${new}" "${cur}"; then
+        _upd_add "HOSTVN Scripts: ${cur} -> ${new}" important
+    fi
+
+    if [ -n "${UPD_IMPORTANT}" ]; then
+        printf '%s' "${UPD_SUMMARY}" >"${UPD_PENDING}"
+    else
+        : >"${UPD_PENDING}"
+    fi
+}
+
+# Telegram message, sent again only when the list changes or after 7 days.
+upd_notify() {
+    local sig
+    if [ -z "${UPD_IMPORTANT}" ]; then
+        rm -f "${UPD_NOTIFIED}"
+        return 0
+    fi
+    sig=$(md5sum <<<"${UPD_IMPORTANT}" | cut -d' ' -f1)
+    if [ -f "${UPD_NOTIFIED}" ] && [ "$(cat "${UPD_NOTIFIED}")" == "${sig}" ] &&
+        [ -z "$(find "${UPD_NOTIFIED}" -mtime +6 2>/dev/null)" ]; then
+        return 0
+    fi
+    tg_notify "$(date "+%d %b %Y %H:%M"): CAP NHAT - VPS $(tg_server_name) co ban cap nhat:
+${UPD_SUMMARY}Chay lenh hostvn, chon 14 de cap nhat." && echo "${sig}" >"${UPD_NOTIFIED}"
+}
+
+############################################
+# Daily check (menu banner + Telegram)
+############################################
+upd_alert_enabled() {
+    crontab -u root -l 2>/dev/null | grep -q -- "${UPD_CRON}"
+}
+
+upd_alert_enable() {
+    upd_alert_enabled && return 0
+    {
+        crontab -u root -l 2>/dev/null
+        echo "23 5 * * * bash ${UPD_CRON} >/dev/null 2>&1"
+    } | crontab -u root -
+}
+
+upd_alert_disable() {
+    if upd_alert_enabled; then
+        crontab -u root -l 2>/dev/null | grep -v -- "${UPD_CRON}" | crontab -u root -
+    fi
+    rm -f "${UPD_PENDING}" "${UPD_NOTIFIED}"
+}

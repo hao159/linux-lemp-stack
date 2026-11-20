@@ -54,6 +54,33 @@ _change_path(){
 _change_vhost(){
     mv "${NGINX_CONF_DIR}"/conf.d/"${domain}".conf "${NGINX_CONF_DIR}"/conf.d/"${newDomain}".conf
     sed -i "s|${domain}|${newDomain}|g" "${NGINX_CONF_DIR}"/conf.d/"${newDomain}".conf
+    # the vhost now points to ssl/<new domain>: keep the files there so Nginx still starts,
+    # the certificate itself has to be issued again for the new name
+    if [ -d "${SSL_DIR}/${domain}" ] && [ ! -d "${SSL_DIR}/${newDomain}" ]; then
+        mv "${SSL_DIR}/${domain}" "${SSL_DIR}/${newDomain}"
+    fi
+    rm -rf "/root/.acme.sh/${domain}"
+}
+
+# Name and paths inside the website file
+_change_user_config_content(){
+    sed -i -e "s|^\[${domain}\]\$|[${newDomain}]|" \
+        -e "s|^domain=.*|domain=${newDomain}|" \
+        -e "s|^public_html=/home/${user}/${domain}/|public_html=/home/${user}/${newDomain}/|" \
+        -e "s|^docroot=/home/${user}/${domain}/|docroot=/home/${user}/${newDomain}/|" \
+        "${USER_DIR}/.${newDomain}.conf"
+}
+
+# Apache: the virtual host is written again from the website file
+_change_vhost_apache(){
+    local aliases
+    aliases=$(_ap_site_aliases "${newDomain}")
+    ap_vhost_remove "${domain}"
+    # the certificate was issued for the old name
+    rm -rf "${SSL_DIR:?}/${domain}" "/root/.acme.sh/${domain}"
+    ap_redirect_retarget "${domain}" "${newDomain}"
+    # shellcheck disable=SC2086
+    ap_vhost_write "${newDomain}" ${aliases:--}
 }
 
 _change_php_config(){
@@ -81,15 +108,24 @@ _change_domain_in_db(){
 _run(){
     _change_path
     _change_user_config
-    _change_vhost
+    _change_user_config_content
+    if ws_is_apache; then
+        _change_vhost_apache
+        ssl_note="Chung chi SSL cua ten mien cu da bi xoa, vui long cai dat SSL cho ${newDomain}."
+    else
+        _change_vhost
+    fi
     _change_php_config
-    _change_php_include_path
+    if [ -d "/etc/nginx/php/${domain}" ]; then
+        _change_php_include_path
+    fi
     _change_domain_in_db
 
     if nginx -t; then
         _restart_service
         clear
         printf "%s\n" "${GREEN}Doi domain thanh cong.${NC}"
+        [ -n "${ssl_note}" ] && printf "%s\n" "${RED}${ssl_note}${NC}"
     else
         clear
         nginx -t
@@ -101,6 +137,7 @@ _run(){
 ALERT=""
 domain=""
 newDomain=""
+ssl_note=""
 
 _select_real_domain
 
@@ -114,6 +151,9 @@ else
         if [ "${newDomain}" == "0" ]; then
             clear
             printf "%s\n" "${RED}Ban da chon huy thao tac${NC}"
+        elif [ -f "${USER_DIR}/.${newDomain}.conf" ] || [ -d "/home/${user}/${newDomain}" ]; then
+            clear
+            printf "%s\n" "${RED}Ten mien ${newDomain} da ton tai tren VPS.${NC}"
         else
             _run
         fi

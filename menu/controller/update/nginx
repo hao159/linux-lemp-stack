@@ -1,0 +1,75 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Update Nginx, or rebuild the current version when UPD_NGINX_MODE=rebuild.
+# Called from the update menu and from the Nginx menu, the caller shows the next menu.
+
+source /var/hostvn/menu/helpers/update
+
+_build(){
+    printf "%s\n" "${GREEN}Dang build Nginx ${1}, mat vai phut. Website van hoat dong trong luc build...${NC}"
+    upd_nginx_install "${1}"
+    case $? in
+    0)
+        ALERT=$(printf "%s" "${GREEN}${2} Nginx ${1} thanh cong.${NC}")
+        ;;
+    1)
+        ALERT=$(printf "%s" "${RED}Build Nginx ${1} that bai, Nginx $(upd_nginx_current) van dang chay. Log: ${UPD_NGINX_LOG}${NC}")
+        ;;
+    2)
+        ALERT=$(printf "%s" "${RED}Nginx ${1} khong chay duoc voi cau hinh hien tai, da khoi phuc Nginx $(upd_nginx_current). Log: ${UPD_NGINX_LOG}${NC}")
+        ;;
+    3)
+        ALERT=$(printf "%s" "${RED}Nginx ${1} khong khoi dong duoc, da khoi phuc va chay lai Nginx $(upd_nginx_current). Log: ${UPD_NGINX_LOG}${NC}")
+        ;;
+    *)
+        ALERT=$(printf "%s" "${RED}Cau hinh Nginx hien tai dang loi (nginx -t). Vui long sua truoc khi cap nhat.${NC}")
+        ;;
+    esac
+    # refresh the banner of the menu
+    (upd_check >/dev/null 2>&1 &)
+}
+
+_run(){
+    local cur new
+    cur=$(upd_nginx_current)
+
+    if [ "${UPD_NGINX_MODE}" == "rebuild" ]; then
+        _build "${cur}" "Rebuild"
+        return
+    fi
+
+    printf "%s\n" "${GREEN}Dang kiem tra phien ban Nginx...${NC}"
+    new=$(upd_nginx_latest)
+    if [ -z "${new}" ]; then
+        ALERT=$(printf "%s" "${RED}Khong kiem tra duoc phien ban Nginx moi.${NC}")
+    elif ! upd_ver_gt "${new}" "${cur}"; then
+        ALERT=$(printf "%s" "${GREEN}Nginx ${cur} dang la ban moi nhat.${NC}")
+    else
+        printf "%s\n" "Nginx hien tai: ${cur} - ban moi: ${new}"
+        printf "%s\n" "Nginx se duoc build lai tu ma nguon va restart mot lan. Neu loi se tu khoi phuc ban cu."
+        read -r -p "Ban co muon cap nhat Nginx len ${new} khong ? (y/n) " prompt_upd_nginx
+        if [[ "${prompt_upd_nginx}" =~ ^([yY])$ ]]; then
+            _build "${new}" "Cap nhat"
+        else
+            ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        fi
+    fi
+}
+
+ALERT=''
+prompt_upd_nginx=''
+
+_run
+UPD_NGINX_MODE=''
+clear
+printf "%s\n" "${ALERT}"

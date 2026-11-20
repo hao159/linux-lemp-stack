@@ -28,6 +28,12 @@ printf "%s==================================================%s\n" "${GREEN}" "${
 printf "%sIP VPS: %s - OS: %s %s - Mode: %s%s\n" "${GREEN}" "${IPADDRESS}" "${OS_ID}" "${OS_VERSION_ID}" "${install_mode}" "${NC}"
 printf "%sphpMyAdmin: %s%s\n" "${RED}" "http://${IPADDRESS}:${admin_port}/phpmyadmin" "${NC}"
 printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+# Written by the daily check (menu/cronjob/update_check)
+if [ -s /var/hostvn/update/pending ]; then
+    printf "%sCo ban cap nhat (chon 14 de cap nhat):%s\n" "${RED}" "${NC}"
+    cat /var/hostvn/update/pending
+    printf "%s==================================================%s\n" "${GREEN}" "${NC}"
+fi
 
 while [ "${CHOICE}" != "0" ]
 do
@@ -44,7 +50,7 @@ do
     printf "${GREEN}%s${NC}\n" "11. ${lang_account_manager}"
     printf "${GREEN}%s${NC}\n" "12. Cronjob/Auto Backup"
     printf "${GREEN}%s${NC}\n" "13. ${lang_manager_tool}"
-    printf "${GREEN}%s${NC}\n" "14. ${lang_manager_update_scripts}"
+    printf "${GREEN}%s${NC}\n" "14. ${lang_manager_update}"
     printf "${GREEN}%s${NC}\n" "15. Change language"
     printf "${GREEN}%s${NC}\n" "=================================================="
     read -r -p " Nhap vao lua chon cua ban [0 = Thoat] " CHOICE
@@ -67,7 +73,7 @@ do
         11) clear; menu_account ;;
         12) clear; menu_cronjob ;;
         13) clear; menu_tools ;;
-        14) clear ; update_script;;
+        14) clear ; menu_update;;
         15) clear ; change_language;;
         0) clear; printf "%s\n" "${GREEN}Bye Bye... Cam on ban da su dung ${AUTHOR} Script${NC}";;
         *) clear; printf "%s\n" "${GREEN}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}";;

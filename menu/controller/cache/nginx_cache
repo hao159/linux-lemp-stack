@@ -130,7 +130,7 @@ _enable_cache() {
     if [ -d "/home/${user}/${domain}/public_html/wp-content/plugins/woocommerce" ]; then
         if [ ! -f "${NGINX_CONF_DIR}/php/${domain}/php_cache_woo.conf" ]; then
             if [ -f "${CUSTOM_DIR}/php_cache_woo.conf" ]; then
-                cp "${CUSTOM_DIR}"/php_cache_woo.conf "${NGINX_CONF_DIR}"/php/"${domain}"/php_php_cache_woocache.conf
+                cp "${CUSTOM_DIR}"/php_cache_woo.conf "${NGINX_CONF_DIR}"/php/"${domain}"/php_cache_woo.conf
             else
                 cp "${TEMPLATE_DIR}"/php_cache_woo.conf "${NGINX_CONF_DIR}"/php/"${domain}"/php_cache_woo.conf
             fi

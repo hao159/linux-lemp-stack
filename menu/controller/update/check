@@ -1,0 +1,25 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/update
+
+printf "%s\n" "${GREEN}Dang kiem tra ban cap nhat (web server, PHP, MariaDB, CrowdSec, he dieu hanh, Scripts)...${NC}"
+upd_check refresh
+clear
+if [ -n "${UPD_SUMMARY}" ]; then
+    printf "%s\n" "${RED}Co ban cap nhat:${NC}"
+    printf "%s" "${UPD_SUMMARY}"
+else
+    printf "%s\n" "${GREEN}Khong co ban cap nhat nao.${NC}"
+fi
+echo
+menu_update

@@ -17,10 +17,17 @@ printf "${GREEN}%s${NC}\n" "LEMP Stack Manager "
 printf "${GREEN}%s${NC}\n" "==================="
 
 while [ "${CHOICE}" != "0" ]; do
-    printf "${GREEN}%s${NC}\n" "1. Nginx"
+    if ws_is_apache; then
+        printf "${GREEN}%s${NC}\n" "1. Apache"
+    else
+        printf "${GREEN}%s${NC}\n" "1. Nginx"
+    fi
     printf "${GREEN}%s${NC}\n" "2. PHP"
     printf "${GREEN}%s${NC}\n" "3. Database"
     printf "${GREEN}%s${NC}\n" "4. Log"
+    if ! ws_is_apache; then
+        printf "${GREEN}%s${NC}\n" "5. Apache phia sau Nginx (website can .htaccess)"
+    fi
     printf "${GREEN}%s${NC}\n" "==================="
     read -r -p " ${SELECT_OPTION} " CHOICE
     if [ -z "${CHOICE}" ]; then
@@ -43,6 +50,14 @@ while [ "${CHOICE}" != "0" ]; do
     4)
         clear
         lemp_log
+        ;;
+    5)
+        clear
+        if ws_is_apache; then
+            printf "${RED}%s${NC}\n" "${WRONG_OPTION}"
+        else
+            lemp_apache
+        fi
         ;;
     0)
         clear

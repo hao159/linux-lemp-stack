@@ -4,6 +4,7 @@
 # Cron: */5 * * * *
 
 source /var/hostvn/menu/helpers/os
+source /var/hostvn/menu/helpers/apache
 source /var/hostvn/menu/helpers/telegram
 
 tg_load || exit 0
@@ -13,7 +14,11 @@ php1_version=$(grep -w "php1_version" "${FILE_INFO}" | cut -f2 -d'=')
 php2_version=$(grep -w "php2_version" "${FILE_INFO}" | cut -f2 -d'=')
 php2_release=$(grep -w "php2_release" "${FILE_INFO}" | cut -f2 -d'=')
 
-services=("nginx" "mariadb")
+services=("$(ws_service)" "mariadb")
+# Apache behind Nginx
+if ! ws_is_apache && ap_backend_enabled; then
+    services+=("${AP_SERVICE}")
+fi
 [ -n "${php1_version}" ] && services+=("$(php_service "${php1_version}")")
 if [ -n "${php2_version}" ] && [ "${php2_release}" == "yes" ]; then
     services+=("$(php_service "${php2_version}")")

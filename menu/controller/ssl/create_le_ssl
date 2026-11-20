@@ -108,6 +108,23 @@ _sign_ssl() {
     /root/.acme.sh/acme.sh --upgrade
     clear
 
+    # HTTP validation: the challenge file is written in the folder the web server serves.
+    # A website that is only a proxy (Node.js) has no such folder with Nginx, acme.sh then
+    # adds the challenge to the vhost itself. The web server is reloaded at every renewal.
+    local acme_mode=() acme_reload=() web_root=""
+    if ws_is_apache; then
+        acme_mode=(-w "$(ap_site_docroot "${domain}")")
+        acme_reload=(--reloadcmd "systemctl reload ${AP_SERVICE}")
+    else
+        web_root=$(grep -m1 -E '^[[:space:]]*root[[:space:]]+/' "${VHOST_DIR}/${domain}.conf" | awk '{print $2}' | tr -d ';')
+        if [ -n "${web_root}" ] && [ -d "${web_root}" ] && ! grep -q "proxy_cache_bypass" "${VHOST_DIR}/${domain}.conf"; then
+            acme_mode=(-w "${web_root}")
+        else
+            acme_mode=(--nginx "${VHOST_DIR}/${domain}.conf")
+        fi
+        acme_reload=(--reloadcmd "systemctl reload nginx")
+    fi
+
     if [[ -n "${method}" && "${method}" == "cf_api" ]]; then
         if [ "${domain_type}" == "2" ]; then
             if [ "${ssl_type}" == "1" ]; then
@@ -127,15 +144,15 @@ _sign_ssl() {
     else
         if [ "${domain_type}" == "2" ]; then
             if [ "${ssl_type}" == "1" ]; then
-                /root/.acme.sh/acme.sh --issue --dns dns_cf -d "${domain}" --server letsencrypt --force
+                /root/.acme.sh/acme.sh --issue "${acme_mode[@]}" -d "${domain}" --server letsencrypt --force
             else
-                /root/.acme.sh/acme.sh --issue --dns dns_cf -d "${domain}" --force
+                /root/.acme.sh/acme.sh --issue "${acme_mode[@]}" -d "${domain}" --force
             fi
         else
             if [ "${ssl_type}" == "1" ]; then
-                /root/.acme.sh/acme.sh --issue --dns dns_cf -d "${domain}" -d "www.${domain}" --server letsencrypt --force
+                /root/.acme.sh/acme.sh --issue "${acme_mode[@]}" -d "${domain}" -d "www.${domain}" --server letsencrypt --force
             else
-                /root/.acme.sh/acme.sh --issue --dns dns_cf -d "${domain}" -d "www.${domain}" --force
+                /root/.acme.sh/acme.sh --issue "${acme_mode[@]}" -d "${domain}" -d "www.${domain}" --force
             fi
         fi
     fi
@@ -154,10 +171,14 @@ _sign_ssl() {
 
     /root/.acme.sh/acme.sh --install-cert -d "${domain}" \
         --key-file "${SSL_DIR}"/"${domain}"/key.pem \
-        --fullchain-file "${SSL_DIR}"/"${domain}"/cert.pem
+        --fullchain-file "${SSL_DIR}"/"${domain}"/cert.pem "${acme_reload[@]}"
 }
 
 _edit_vhost() {
+    if ws_is_apache; then
+        ap_vhost_write "${domain}"
+        return
+    fi
     sed -i '/https.conf/d' "${VHOST_DIR}"/"${domain}".conf
     sed -i "/listen 80;/a include ${NGINX_CONF_DIR}/extra/https.conf;" "${VHOST_DIR}"/"${domain}".conf
 
@@ -247,6 +268,9 @@ if [[ -z "${domain}" && -z "${ALERT}" ]]; then
 else
     if [ -z "${ALERT}" ]; then
         check_ssl_config=$(grep -w "https.conf" "${VHOST_DIR}"/"${domain}".conf)
+        if ws_is_apache && ap_site_has_ssl "${domain}"; then
+            check_ssl_config="yes"
+        fi
         if [ -n "${check_ssl_config}" ]; then
             clear
             printf "%s\n" "${RED}Ten mien da duoc cau hinh SSL. Vui long xoa cau hinh SSL cu truoc.${NC}"

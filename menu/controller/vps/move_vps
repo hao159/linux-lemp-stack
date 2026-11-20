@@ -120,6 +120,20 @@ _create_sftp_connect() {
 
 _sync_nginx_conf() {
     clear
+    if ws_is_apache; then
+        # The virtual hosts are written again on the new VPS from the website files
+        # (ap_rebuild_all), only the certificates and the redirect list are copied.
+        printf "%s\n" "Move du lieu SSL, Redirect Domain..."
+        if [ -d "${SSL_DIR}" ]; then
+            mv "${SSL_DIR}"/server "${SSL_DIR}"/server.bak
+            rclone sync "${SSL_DIR}" "${remote_name}":"${SSL_DIR}"
+            mv "${SSL_DIR}"/server.bak "${SSL_DIR}"/server
+        fi
+        if [ -d "${BASH_DIR}/apache" ]; then
+            rclone sync "${BASH_DIR}"/apache "${remote_name}":"${BASH_DIR}"/apache
+        fi
+        return
+    fi
     printf "%s\n" "Move du lieu Nginx config..."
     rclone sync "${NGINX_CONF_DIR}"/conf.d "${remote_name}":"${NGINX_CONF_DIR}"/conf.d
     if [ -d "${SSL_DIR}" ]; then
@@ -422,7 +436,7 @@ _run() {
         if [ -z "${ALERT}" ]; then
             clear
             echo
-            printf "%s\n" "${RED}Luu y: VPS moi phai duoc cai dat giong VPS cu.${NC}"
+            printf "%s\n" "${RED}Luu y: VPS moi phai duoc cai dat giong VPS cu (cung web server: $(ws_service)).${NC}"
             printf "%s\n" "${GREEN}Bat dau qua trinh chuyen du lieu...${NC}"
             printf "%s\n" "${GREEN}Thoi gian phu thuoc vao dung luong va toc do mang tren vps.${NC}"
             printf "%s\n" "${GREEN}Vui long khong tat SSH cho toi khi nhan duoc thong bao qua trinh hoan tat.${NC}"
@@ -541,6 +555,10 @@ _run() {
                 systemctl restart php"${php1_version}"-fpm
                 if [ "${php2_release}" == "yes" ]; then
                     systemctl restart php"${php2_version}"-fpm
+                fi
+
+                if ws_is_apache; then
+                    ap_rebuild_all
                 fi
 
                 if nginx -t; then

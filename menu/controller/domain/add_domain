@@ -439,6 +439,10 @@ _create_php_config() {
 }
 
 _create_vhost() {
+    # Apache: the virtual host is written by ap_site_setup once the website is saved
+    if ws_is_apache; then
+        return 0
+    fi
     if [ -f "${CUSTOM_DIR}/${SOURCE}.conf" ]; then
         cp "${CUSTOM_DIR}"/"${SOURCE}".conf "${VHOST_DIR}"/"${domain}".conf
         _apply_dev_port "${domain}"
@@ -634,6 +638,10 @@ _run() {
 
             _set_owner
             _save_user_config
+
+            if ws_is_apache; then
+                ap_site_setup "${domain}" "${SOURCE}" "${TEMPLATE_DIR}" "${proxy_port}"
+            fi
 
             if [ -n "${site_port}" ]; then
                 _apply_dev_port "${domain}"

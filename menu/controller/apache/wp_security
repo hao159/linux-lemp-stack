@@ -1,0 +1,131 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# WordPress protections when Apache is the web server, written in .htaccess:
+#   AP_WP_ACTION=xmlrpc    block xmlrpc.php
+#   AP_WP_ACTION=user_api  block /wp-json/wp/v2/users
+#   AP_WP_ACTION=wp_admin  password in front of wp-admin and wp-login.php
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+case "${AP_WP_ACTION}" in
+xmlrpc) wp_title="Chan xmlrpc.php" ;;
+user_api) wp_title="Chan User API (wp-json/wp/v2/users)" ;;
+*) AP_WP_ACTION="wp_admin"; wp_title="Mat khau bao ve wp-admin" ;;
+esac
+
+_is_on(){
+    if [ "${AP_WP_ACTION}" == "wp_admin" ]; then
+        ap_htaccess_has "${docroot}/wp-admin/.htaccess" wp_admin
+    else
+        ap_htaccess_has "${docroot}/.htaccess" "${AP_WP_ACTION}"
+    fi
+}
+
+_set_conf(){
+    sed -i "/^${1}=/d" "${USER_DIR}/.${domain}.conf"
+    echo "${1}=${2}" >>"${USER_DIR}/.${domain}.conf"
+}
+
+_wp_admin_on(){
+    local htpasswd_user htpasswd_passwd dir="/home/${user}/${domain}/htpasswd/wp_admin"
+    read -r -p "Nhap vao user: " htpasswd_user
+    read -r -p "Nhap vao mat khau: " htpasswd_passwd
+    if [ -z "${htpasswd_user}" ] || [ -z "${htpasswd_passwd}" ]; then
+        ALERT=$(printf "%s" "${RED}User va mat khau khong duoc de trong.${NC}")
+        return 1
+    fi
+    mkdir -p "${dir}"
+    htpasswd -b -c "${dir}/.htpasswd" "${htpasswd_user}" "${htpasswd_passwd}" >/dev/null 2>&1
+    chown -R "${user}":"${user}" "/home/${user}/${domain}/htpasswd"
+    chmod 644 "${dir}/.htpasswd"
+
+    # admin-ajax.php is called by the visitors of the website
+    ap_htaccess_block "${docroot}/wp-admin/.htaccess" wp_admin <<END
+AuthType Basic
+AuthName "Prohibited Area"
+AuthUserFile ${dir}/.htpasswd
+Require valid-user
+<Files "admin-ajax.php">
+    Require all granted
+</Files>
+END
+    ap_htaccess_block "${docroot}/.htaccess" wp_login <<END
+<Files "wp-login.php">
+    AuthType Basic
+    AuthName "Prohibited Area"
+    AuthUserFile ${dir}/.htpasswd
+    Require valid-user
+</Files>
+END
+}
+
+_wp_admin_off(){
+    ap_htaccess_block "${docroot}/wp-admin/.htaccess" wp_admin </dev/null
+    ap_htaccess_block "${docroot}/.htaccess" wp_login </dev/null
+    rm -rf "/home/${user}/${domain}/htpasswd/wp_admin"
+}
+
+_run(){
+    local state="Tat" prompt_action
+    user=$(_ap_site "${domain}" username)
+    docroot=$(ap_site_docroot "${domain}")
+    if [ ! -f "${docroot}/wp-load.php" ]; then
+        ALERT=$(printf "%s" "${RED}Website ${domain} khong phai WordPress.${NC}")
+        return
+    fi
+    _is_on && state="Bat"
+    printf "%s\n" "${wp_title} - website ${domain}: dang ${RED}${state}${NC}"
+    PS3="Nhap vao lua chon cua ban [ 1 - 3 ]: "
+    select opt_action in "Bat" "Tat" "Cancel"; do
+        prompt_action=${REPLY}
+        break
+    done
+    case "${prompt_action}" in
+    1)
+        if [ "${AP_WP_ACTION}" == "wp_admin" ]; then
+            _wp_admin_on || return
+        else
+            ap_wp_block "${domain}" "${AP_WP_ACTION}" on
+            _set_conf "disable_${AP_WP_ACTION}" yes
+        fi
+        ALERT=$(printf "%s" "${GREEN}${wp_title}: da bat.${NC}")
+        ;;
+    2)
+        if [ "${AP_WP_ACTION}" == "wp_admin" ]; then
+            _wp_admin_off
+        else
+            ap_wp_block "${domain}" "${AP_WP_ACTION}" off
+            _set_conf "disable_${AP_WP_ACTION}" no
+        fi
+        ALERT=$(printf "%s" "${GREEN}${wp_title}: da tat.${NC}")
+        ;;
+    *) ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}") ;;
+    esac
+}
+
+ALERT=''
+domain=''
+
+_select_domain
+if [ -z "${ALERT}" ]; then
+    if [ -z "${domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Ban da chon huy thao tac.${NC}")
+    else
+        _run
+    fi
+fi
+
+clear
+printf "%s\n" "${ALERT}"
+menu_wordpress

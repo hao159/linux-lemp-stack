@@ -37,8 +37,13 @@ _run(){
         ALERT=$(printf "%s\n" "${RED}Huy cai dat CrowdSec.${NC}")
         return
     fi
-    _confirm "Ban co muon bat AppSec (WAF chan request doc hai tren Nginx) khong ?"
-    prompt_appsec="${prompt_cs}"
+    if ws_is_apache; then
+        # AppSec runs in the Nginx Lua bouncer
+        prompt_appsec="n"
+    else
+        _confirm "Ban co muon bat AppSec (WAF chan request doc hai tren Nginx) khong ?"
+        prompt_appsec="${prompt_cs}"
+    fi
     if [[ "${prompt_appsec}" =~ ^([yY])$ ]] && ! nginx_has_lua; then
         printf "%s\n" "${RED}Nginx hien tai chua co Lua, script se build lai Nginx (mat vai phut, Nginx khoi dong lai 1 lan).${NC}"
         _confirm "Ban co dong y build lai Nginx khong ?"

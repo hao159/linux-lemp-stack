@@ -37,6 +37,25 @@ CS_ACCESS_LOG_MARK="hostvn-crowdsec"
 CS_LOGROTATE="/etc/logrotate.d/hostvn-nginx-access"
 CS_LOGROTATE_DEFAULT=7
 
+# Apache is the web server (menu/helpers/apache loaded and webserver=apache)
+_cs_apache() {
+    declare -F ws_is_apache >/dev/null && ws_is_apache
+}
+
+# The access log and its logrotate file depend on the web server. The installer only
+# knows the web server after this file is loaded, so the functions below call it again.
+_cs_paths() {
+    if _cs_apache; then
+        CS_ACCESS_LOG_DIR="${AP_LOG_DIR}/access"
+        CS_LOGROTATE="/etc/logrotate.d/hostvn-apache-access"
+    else
+        CS_ACCESS_LOG_DIR="/var/log/nginx/access"
+        CS_LOGROTATE="/etc/logrotate.d/hostvn-nginx-access"
+    fi
+    CS_ACCESS_LOG="${CS_ACCESS_LOG_DIR}/access.log"
+}
+_cs_paths
+
 CS_TG_NAME="hostvn_telegram"
 CS_TG_FILE="/etc/crowdsec/notifications/${CS_TG_NAME}.yaml"
 CS_ALLOWLIST="hostvn"
@@ -101,13 +120,30 @@ _cs_nginx_reload() {
 # Access log + logrotate
 ############################################
 cs_access_log_enabled() {
+    if _cs_apache; then
+        [ "$(_ap_info apache_access_log)" == "yes" ]
+        return
+    fi
     grep -q "${CS_ACCESS_LOG_MARK}" "${CS_NGINX_MAIN}" 2>/dev/null
 }
 
 # The http block ships with "access_log off;", the websites inherit the setting.
 cs_access_log_enable() {
+    _cs_paths
     cs_access_log_enabled && return 0
     mkdir -p "${CS_ACCESS_LOG_DIR}"
+    if _cs_apache; then
+        # the CustomLog line is written by ap_write_global, the websites inherit it
+        _ap_set_info apache_access_log yes
+        ap_write_global standalone
+        if ! ap_test >/dev/null 2>&1; then
+            cs_access_log_disable
+            echo "Cau hinh Apache bi loi sau khi bat access log, da hoan tac."
+            return 1
+        fi
+        ap_reload 2>/dev/null
+        return 0
+    fi
     sed -i "0,/^\([[:space:]]*\)access_log[[:space:]]\+off;/s||\1access_log ${CS_ACCESS_LOG}; # ${CS_ACCESS_LOG_MARK}|" "${CS_NGINX_MAIN}"
     if ! cs_access_log_enabled; then
         echo "Khong tim thay 'access_log off;' trong ${CS_NGINX_MAIN}, chua bat duoc access log."
@@ -123,6 +159,12 @@ cs_access_log_enable() {
 }
 
 cs_access_log_disable() {
+    if _cs_apache; then
+        _ap_set_info apache_access_log no
+        ap_write_global standalone
+        ap_reload 2>/dev/null
+        return 0
+    fi
     sed -i "s|^\([[:space:]]*\)access_log .*# ${CS_ACCESS_LOG_MARK}.*|\1access_log off;|" "${CS_NGINX_MAIN}"
     _cs_nginx_reload
 }
@@ -133,8 +175,15 @@ cs_valid_rotate_days() {
 
 # cs_logrotate_set <days> : rotate the access log every day, keep <days> files
 cs_logrotate_set() {
-    local days="${1:-${CS_LOGROTATE_DEFAULT}}"
+    local days="${1:-${CS_LOGROTATE_DEFAULT}}" reopen
     cs_valid_rotate_days "${days}" || days="${CS_LOGROTATE_DEFAULT}"
+    _cs_paths
+    # make the web server open the new file
+    if _cs_apache; then
+        reopen="systemctl reload ${AP_SERVICE} >/dev/null 2>&1 || true"
+    else
+        reopen='[ -f /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)"'
+    fi
     cat >"${CS_LOGROTATE}" <<END
 # Managed by hostvn - access log read by CrowdSec
 ${CS_ACCESS_LOG_DIR}/*.log {
@@ -146,20 +195,21 @@ ${CS_ACCESS_LOG_DIR}/*.log {
     delaycompress
     sharedscripts
     postrotate
-        [ -f /run/nginx.pid ] && kill -USR1 "\$(cat /run/nginx.pid)"
+        ${reopen}
     endscript
 }
 END
 }
 
 cs_logrotate_days() {
+    _cs_paths
     grep -m1 -E '^[[:space:]]*rotate ' "${CS_LOGROTATE}" 2>/dev/null | awk '{print $2}'
 }
 
 # Ask how long the access log is kept. Sets CS_ROTATE_DAYS.
 cs_prompt_rotate_days() {
     local days
-    echo "CrowdSec can access log cua Nginx. Log duoc rotate moi ngay va nen (gzip)."
+    echo "CrowdSec can access log cua web server. Log duoc rotate moi ngay va nen (gzip)."
     echo "  1) Giu 7 ngay (mac dinh)"
     echo "  2) Giu 14 ngay"
     echo "  3) Giu 30 ngay"
@@ -185,17 +235,28 @@ cs_prompt_rotate_days() {
 ############################################
 _cs_write_acquis() {
     mkdir -p "${CS_ACQUIS_DIR}"
+    _cs_paths
     {
         echo "# Managed by hostvn - logs of the websites"
         echo "filenames:"
         echo "  - ${CS_ACCESS_LOG_DIR}/*.log"
-        # The package may already watch /var/log/nginx, reading it twice doubles the events
-        if ! grep -qs "/var/log/nginx" /etc/crowdsec/acquis.yaml; then
-            echo "  - /var/log/nginx/*.log"
+        if _cs_apache; then
+            # The package may already watch the Apache logs, reading them twice doubles the events
+            if ! grep -qs "${AP_LOG_DIR}" /etc/crowdsec/acquis.yaml; then
+                echo "  - ${AP_ERROR_LOG}"
+            fi
+            echo "  - /home/*/*/logs/error.log"
+            echo "labels:"
+            echo "  type: apache2"
+        else
+            # The package may already watch /var/log/nginx, reading it twice doubles the events
+            if ! grep -qs "/var/log/nginx" /etc/crowdsec/acquis.yaml; then
+                echo "  - /var/log/nginx/*.log"
+            fi
+            echo "  - /home/*/*/logs/*.log"
+            echo "labels:"
+            echo "  type: nginx"
         fi
-        echo "  - /home/*/*/logs/*.log"
-        echo "labels:"
-        echo "  type: nginx"
         # Distributions without rsyslog only log SSH to the journal
         if [ ! -f /var/log/auth.log ] && [ ! -f /var/log/secure ] && ! grep -qs "journalctl" /etc/crowdsec/acquis.yaml; then
             echo "---"
@@ -214,7 +275,8 @@ _cs_write_acquis() {
 
 # cs_install [days the access log is kept]
 cs_install() {
-    local lapi_busy="no" lapi_port repo_script
+    local lapi_busy="no" lapi_port repo_script web_collection="crowdsecurity/nginx"
+    _cs_apache && web_collection="crowdsecurity/apache2"
 
     if cs_installed; then
         echo "CrowdSec da duoc cai dat."
@@ -248,7 +310,7 @@ cs_install() {
 
     systemctl enable crowdsec >/dev/null 2>&1
     cscli hub update >/dev/null 2>&1
-    cscli collections install crowdsecurity/linux crowdsecurity/sshd crowdsecurity/nginx \
+    cscli collections install crowdsecurity/linux crowdsecurity/sshd "${web_collection}" \
         crowdsecurity/base-http-scenarios crowdsecurity/http-cve crowdsecurity/wordpress >/dev/null 2>&1
     _cs_write_acquis
 
@@ -273,6 +335,7 @@ cs_install() {
 }
 
 cs_uninstall() {
+    _cs_paths
     cs_appsec_enabled && cs_appsec_disable
     cs_access_log_disable
     _cs_profiles_del
@@ -437,6 +500,10 @@ _cs_appsec_probe() {
 
 # Returns 0 = enabled, 1 = error, 2 = Nginx has no Lua (cs_nginx_rebuild_lua first)
 cs_appsec_enable() {
+    if _cs_apache; then
+        echo "AppSec chi ho tro Nginx (Lua bouncer)."
+        return 1
+    fi
     local port key code_bad code_ok
 
     if ! cs_installed; then
@@ -684,6 +751,7 @@ cs_status() {
     else
         printf "%-28s: %s\n" "AppSec (WAF)" "off"
     fi
+    _cs_paths
     if cs_access_log_enabled; then
         printf "%-28s: %s\n" "Access log" "${CS_ACCESS_LOG} (giu $(cs_logrotate_days) ngay)"
     else

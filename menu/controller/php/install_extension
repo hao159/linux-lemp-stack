@@ -1,0 +1,145 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Install PHP extensions from the packages of Ondrej/Sury (Debian family) or Remi (RHEL family).
+
+_set_var(){
+    ext_php1=$(grep -w "php1_version" "${FILE_INFO}" | cut -f2 -d'=')
+    ext_php2=""
+    if [ "$(grep -w "php2_release" "${FILE_INFO}" | cut -f2 -d'=')" == "yes" ]; then
+        ext_php2=$(grep -w "php2_version" "${FILE_INFO}" | cut -f2 -d'=')
+    fi
+    # shellcheck disable=SC2206
+    ext_names=(${PHP_EXT_LIST})
+}
+
+_select_php(){
+    ext_versions=("${ext_php1}")
+    [ -n "${ext_php2}" ] || return 0
+
+    printf "%s\n" "Chon phien ban PHP muon cai extension"
+    PS3="${INPUT_SELECT} [ 1 - 4 ]: "
+    select opt in "PHP ${ext_php1}" "PHP ${ext_php2}" "Ca hai" "Cancel"; do
+        case $REPLY in
+        1) break ;;
+        2) ext_versions=("${ext_php2}"); break ;;
+        3) ext_versions=("${ext_php1}" "${ext_php2}"); break ;;
+        4) ext_versions=(); break ;;
+        *) printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+        esac
+    done
+}
+
+# "x" when the extension is loaded by every selected PHP version
+_status(){
+    local ver
+    for ver in "${ext_versions[@]}"; do
+        php_ext_loaded "${ver}" "$1" || return 1
+    done
+    return 0
+}
+
+_show_list(){
+    local i name mark note
+    clear
+    printf "%s\n" "${GREEN}Extension cho PHP ${ext_versions[*]}  ( [x] = da cai )${NC}"
+    for i in "${!ext_names[@]}"; do
+        name=${ext_names[$i]}
+        mark=" "
+        _status "${name}" && mark="x"
+        note=""
+        [ "${name}" == "xdebug" ] && note=" (chi nen dung tren may dev)"
+        printf "%3d. [%s] %s%s\n" "$((i + 1))" "${mark}" "${name}" "${note}"
+    done
+    echo
+    printf "%s\n" "Nhap so thu tu, co the nhap nhieu so cach nhau boi dau cach (vi du: 1 4 6)."
+    printf "%s\n" "Extension khong co trong danh sach: nhap ten cua no (vi du: rdkafka)."
+}
+
+_select_ext(){
+    local token
+    ext_selected=()
+    read -r -p "Lua chon cua ban [0 = Thoat]: " ext_input
+    for token in ${ext_input}; do
+        if [[ "${token}" =~ ^[0-9]+$ ]]; then
+            if [ "${token}" -ge 1 ] && [ "${token}" -le "${#ext_names[@]}" ]; then
+                ext_selected+=("${ext_names[$((token - 1))]}")
+            fi
+        elif [[ "${token}" =~ ^[a-z][a-z0-9_]*$ ]]; then
+            ext_selected+=("${token}")
+        fi
+    done
+}
+
+_install(){
+    local ver name changed
+    printf "%s\n" "${GREEN}${PROCESSING}${NC}"
+    pkg_update >/dev/null 2>&1
+
+    for ver in "${ext_versions[@]}"; do
+        changed="no"
+        for name in "${ext_selected[@]}"; do
+            if php_ext_loaded "${ver}" "${name}"; then
+                ext_result="${ext_result}${GREEN}PHP ${ver} - ${name}: da cai tu truoc.${NC}"$'\n'
+                continue
+            fi
+            php_ext_install "${ver}" "${name}"
+            case $? in
+            0) changed="yes" ;;
+            2)
+                ext_result="${ext_result}${RED}PHP ${ver} - ${name}: repo khong co goi cho extension nay.${NC}"$'\n'
+                continue
+                ;;
+            esac
+            if php_ext_loaded "${ver}" "${name}"; then
+                ext_result="${ext_result}${GREEN}PHP ${ver} - ${name}: cai dat thanh cong.${NC}"$'\n'
+            else
+                ext_result="${ext_result}${RED}PHP ${ver} - ${name}: cai dat that bai.${NC}"$'\n'
+            fi
+        done
+        if [ "${changed}" == "yes" ]; then
+            systemctl restart "php${ver}-fpm"
+            if ! systemctl is-active --quiet "php${ver}-fpm"; then
+                ext_result="${ext_result}${RED}PHP ${ver}: php-fpm khong khoi dong lai duoc, kiem tra: systemctl status php${ver}-fpm${NC}"$'\n'
+            fi
+        fi
+    done
+}
+
+_run(){
+    _set_var
+    _select_php
+    if [ "${#ext_versions[@]}" -eq 0 ]; then
+        ext_result="${RED}${lang_cancel_action}${NC}"$'\n'
+        return
+    fi
+    _show_list
+    _select_ext
+    if [ "${#ext_selected[@]}" -eq 0 ]; then
+        ext_result="${RED}${lang_cancel_action}${NC}"$'\n'
+        return
+    fi
+    _install
+}
+
+ext_php1=''
+ext_php2=''
+ext_names=()
+ext_versions=()
+ext_selected=()
+ext_input=''
+ext_result=''
+
+_run
+clear
+printf "%s" "${ext_result}"
+lemp_php

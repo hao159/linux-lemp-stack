@@ -1,3 +1,19 @@
+v1.2.0
+
+- Added: menu 14 "Cap nhat & canh bao": check and update Nginx, PHP, MariaDB, CrowdSec, OS packages, Scripts
+- Added: Nginx update finds the newest release of its branch on nginx.org, the old binary is restored when it fails
+- Added: daily check for updates, shown in the hostvn menu and sent to Telegram
+- Added: Apache (event MPM + PHP-FPM) can be chosen instead of Nginx at install: WEBSERVER=apache ./install
+- Added: Apache behind Nginx for the websites that need .htaccess (menu LEMP -> Apache phia sau Nginx)
+- Added: Apache mode: change domain, clone, redirect domain, SSL for alias domains, protected folders, WordPress protections (.htaccess), move VPS, CrowdSec reading the Apache logs
+- Added: menu PHP -> install extensions (mongodb, redis, pgsql, intl, imagick, gd, zip ...) from Ondrej/Sury/Remi packages
+- Added: optional Telegram Message Thread ID, notifications can go to one topic of a forum group
+- Fixed: removing an alias domain deleted the vhost of the main website
+- Fixed: Let's Encrypt "HTTP" validation used the CloudFlare DNS API; the web server is now reloaded when a certificate is renewed
+- Fixed: deleting a website left its alias and redirect domains behind
+- Fixed: WooCommerce cache file written with a wrong name, paid certificate path in the WordPress auto install
+- Fixed: changing a domain with SSL left Nginx with a missing certificate path, the website file kept the old name
+
 v1.1.0
 
 - Added: CrowdSec (nftables firewall bouncer) - optional at install, or menu Firewall -> CrowdSec & AppSec
@@ -6,7 +22,6 @@ v1.1.0
 - Added: Nginx access log is switched on with CrowdSec, daily logrotate with a selectable retention
 - Added: Telegram can be configured during the installation; Bot Token / Chat ID are saved once
 - Added: Telegram message for every IP banned by CrowdSec
-- Added: optional Telegram Message Thread ID, notifications can go to one topic of a forum group
 - Changed: Telegram service/disk notify run from menu/cronjob, service notify works on RHEL family
 
 v1.0.0

@@ -1,0 +1,120 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Redirect domain when Apache is the web server: the domain answers with a 301 to a website.
+
+source /var/hostvn/menu/validate/rule
+source /var/hostvn/menu/helpers/function
+
+printf "%s=================%s\n" "${GREEN}" "${NC}"
+printf "%s Redirect Domain %s\n" "${GREEN}" "${NC}"
+printf "%s=================%s\n" "${GREEN}" "${NC}"
+
+_select_action(){
+    PS3="Nhap vao lua chon cua ban [ 1 - 3 ]: "
+    select opt_action in "Them Redirect Domain" "Xoa Redirect Domain" "Cancel"; do
+        case $REPLY in
+        1) action="add"; break ;;
+        2) action="remove"; break ;;
+        3) action="cancel"; break ;;
+        *) printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+        esac
+    done
+}
+
+# The name must not be a website, an alias or a redirect already
+_name_in_use(){
+    [ -f "${USER_DIR}/.${1}.conf" ] && return 0
+    [ -n "$(ap_redirect_target "$1")" ] && return 0
+    grep -qsE "^alias_domains=(.* )?${1//./\\.}( |\$)" "${USER_DIR}"/.*.conf
+}
+
+_reload(){
+    if ap_test >/dev/null 2>&1; then
+        ap_reload
+        return 0
+    fi
+    return 1
+}
+
+_add(){
+    read -r -p "Nhap Redirect domain (Khong co www) [0 = Thoat]: " redirect_domain
+    redirect_domain=$(echo "${redirect_domain}" | tr '[:upper:]' '[:lower:]')
+    redirect_domain=${redirect_domain#www.}
+    if [ -z "${redirect_domain}" ] || [ "${redirect_domain}" == "0" ]; then
+        ALERT=$(printf "%s" "${RED}Huy thao tac.${NC}")
+        return
+    fi
+    if ! echo "${redirect_domain}" | grep -q "\." || ! "${BASH_DIR}"/menu/validate/check_value domain "${redirect_domain}"; then
+        ALERT=$(printf "%s" "${RED}Ten mien ban nhap khong chinh xac.${NC}")
+        return
+    fi
+    if _name_in_use "${redirect_domain}"; then
+        ALERT=$(printf "%s" "${RED}Ten mien ${redirect_domain} da duoc su dung tren VPS.${NC}")
+        return
+    fi
+    ap_redirect_add "${redirect_domain}" "${domain}"
+    if _reload; then
+        ALERT=$(printf "%s" "${GREEN}Tao Redirect Domain thanh cong: ${redirect_domain} -> ${domain}.${NC}")
+    else
+        ap_redirect_del "${redirect_domain}"
+        ALERT=$(printf "%s" "${RED}${lang_error_vhost}${NC}")
+    fi
+}
+
+_remove(){
+    local list
+    # shellcheck disable=SC2207
+    list=($(ap_redirect_list))
+    if [ "${#list[@]}" -eq 0 ]; then
+        ALERT=$(printf "%s" "${RED}Ban chua cau hinh Redirect Domain nao.${NC}")
+        return
+    fi
+    PS3="${INPUT_SELECT} [0 = Thoat]: "
+    select opt_redirect in "${list[@]}"; do
+        redirect_domain=${opt_redirect}
+        break
+    done
+    if [ -z "${redirect_domain}" ]; then
+        ALERT=$(printf "%s" "${RED}Huy thao tac.${NC}")
+        return
+    fi
+    ap_redirect_del "${redirect_domain}"
+    _reload
+    ALERT=$(printf "%s" "${GREEN}Xoa Redirect domain thanh cong.${NC}")
+}
+
+ALERT=''
+action=''
+domain=''
+redirect_domain=''
+
+_select_action
+if [ "${action}" == "cancel" ]; then
+    ALERT=$(printf "%s" "${RED}Huy thao tac.${NC}")
+elif [ "${action}" == "remove" ]; then
+    _remove
+else
+    printf "%s\n" "${RED}Lua chon website chinh.${NC}"
+    _select_real_domain
+    if [ -z "${ALERT}" ]; then
+        if [ -z "${domain}" ]; then
+            ALERT=$(printf "%s" "${RED}Huy thao tac.${NC}")
+        else
+            _add
+        fi
+    fi
+fi
+
+clear
+printf "%s\n" "${ALERT}"
+menu_domain

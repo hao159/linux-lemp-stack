@@ -235,7 +235,9 @@ check_port_exists(){
 }
 
 check_nginx_status(){
-    if ! service_running nginx; then
+    local ws="nginx"
+    declare -F ws_service >/dev/null && ws=$(ws_service)
+    if ! service_running "${ws}"; then
         ALERT=$(printf "%s\n" "${RED}${NGINX_NO_WORK}${NC}")
     fi
 }

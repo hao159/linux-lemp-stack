@@ -32,11 +32,11 @@ while [ "${CHOICE}" != "0" ]; do
     1)
         clear
         echo ""
-        if [ -f "/var/log/nginx/error.log" ]; then
+        if [ -f "${WS_ERROR_LOG}" ]; then
             if [ -f "/usr/bin/grc" ]; then
-                grc tail -n 20 /var/log/nginx/error.log
+                grc tail -n 20 "${WS_ERROR_LOG}"
             else
-                tail -n 20 /var/log/nginx/error.log
+                tail -n 20 "${WS_ERROR_LOG}"
             fi
             printf "\n"
 

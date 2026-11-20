@@ -11,7 +11,7 @@
 ######################################################################
 
 _set_var(){
-    nginx_status=$(pgrep nginx >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
+    nginx_status=$(pgrep "$(ws_service)" >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
     mysql_status=$(pgrep mariadb >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
     ssh_status=$(pgrep ssh >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
     memcached_status=$(pgrep memcached >/dev/null && printf "%s\n" "${GREEN}Hoat dong${NC}" || printf "%s\n" "${RED}Khong hoat dong${NC}")
@@ -19,13 +19,13 @@ _set_var(){
 }
 
 _show_info(){
-    printf "Nginx                   : %s\n" "${nginx_status}"
+    printf "Web server              : %s (%s)\n" "${nginx_status}" "$(ws_mode)"
     printf "MariaDB                 : %s\n" "${mysql_status}"
     printf "SSH                     : %s\n" "${ssh_status}"
     printf "Memcached               : %s\n" "${memcached_status}"
     printf "Redis                   : %s\n" "${redis_status}"
     printf "MariaDB version         : %s\n" "$(mysql --version | cut -f6 -d' ' | cut -f1 -d'-')"
-    printf "Nginx version           : %s\n" "$(nginx -v 2>&1 | grep -o '[0-9.]*$')"
+    printf "Web server version      : %s\n" "$(nginx -v 2>&1 | grep -o '[0-9.]*$')"
     printf "PHP default version     : %s\n" "${php1_version} - $(systemctl is-active php"$php1_version"-fpm.service)"
     if [ "${php2_release}" == "yes" ]; then
         printf "PHP 2 version           : %s\n" "${php2_version} - $(systemctl is-active php"$php2_version"-fpm.service)"

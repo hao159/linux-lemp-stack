@@ -102,10 +102,40 @@ _destroy_other() {
         fw_remove_port "${site_port}"
     fi
 
-    check_nginx_cache=$(grep -w "${username}" "${NGINX_CONF_DIR}/extra/nginx_cache.conf")
+    # the file does not exist when Apache is the web server
+    check_nginx_cache=$(grep -ws "${username}" "${NGINX_CONF_DIR}/extra/nginx_cache.conf")
     if [ -n "${check_nginx_cache}" ]; then
         sed -i "/${username}/d" "${NGINX_CONF_DIR}"/extra/nginx_cache.conf
     fi
+}
+
+# Alias and redirect domains only exist for this website
+_destroy_alias_redirect() {
+    local f name
+    if ws_is_apache; then
+        for name in $(_ap_site_aliases "${domain}"); do
+            rm -rf "${SSL_DIR:?}/${name}" "/root/.acme.sh/${name}"
+        done
+        ap_redirect_del_target "${domain}"
+        return 0
+    fi
+    for f in "${ALIAS_DIR}"/*.conf; do
+        [ -f "${f}" ] || continue
+        if grep -q "/home/${username}/${domain}/" "${f}"; then
+            name=${f##*/}
+            name=${name%.conf}
+            rm -f "${f}"
+            rm -rf "${SSL_DIR:?}/${name}" "/root/.acme.sh/${name}"
+        fi
+    done
+    for f in "${REDIRECT_DIR}"/*.conf; do
+        [ -f "${f}" ] || continue
+        if grep -qE "301 https?://${domain//./\.}\\\$request_uri" "${f}"; then
+            name=${f##*/}
+            rm -f "${f}"
+            rm -rf "/root/.acme.sh/${name%.conf}"
+        fi
+    done
 }
 
 _remove_path() {
@@ -115,6 +145,11 @@ _remove_path() {
     fi
     if [ -f "${vhost_config}" ]; then
         rm -rf "${vhost_config}"
+    fi
+    # Virtual host of a website served by Apache behind Nginx
+    if ! ws_is_apache && ap_backend_enabled; then
+        ap_vhost_remove "${domain}"
+        ap_reload
     fi
     if [ -f "${USER_DIR}/.${domain}.conf" ]; then
         rm -rf "${USER_DIR}"/."${domain}".conf
@@ -132,6 +167,7 @@ _run() {
 
         _destroy_user "$username"
 
+        _destroy_alias_redirect
         _remove_path
         _destroy_other
         if nginx -t; then

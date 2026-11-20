@@ -53,7 +53,11 @@ _change_port() {
     echo ""
     sleep 1
 
-    sed -i "s|${current_port}|${new_port}|g" "${NGINX_CONF_DIR}"/web_apps.conf
+    if ws_is_apache; then
+        ADMIN_PORT_NEW="${new_port}" ap_write_global standalone
+    else
+        sed -i "s|${current_port}|${new_port}|g" "${NGINX_CONF_DIR}"/web_apps.conf
+    fi
     sed -i '/admin_port=/d' "${FILE_INFO}"
     echo "admin_port=${new_port}" >> "${FILE_INFO}"
     fw_allow_port "${new_port}"
@@ -61,6 +65,11 @@ _change_port() {
 
     if [ -f /etc/fail2ban/jail.d/nginx-http-auth.conf ]; then
         sed -i "s/^port .*/port     = ${new_port}/" /etc/fail2ban/jail.d/nginx-http-auth.conf
+        systemctl restart fail2ban
+    fi
+
+    if [ -f /etc/fail2ban/jail.d/apache-auth.conf ]; then
+        sed -i "s/^port .*/port     = ${new_port}/" /etc/fail2ban/jail.d/apache-auth.conf
         systemctl restart fail2ban
     fi
 

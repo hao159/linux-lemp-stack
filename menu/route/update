@@ -1,0 +1,62 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/hostvn/menu/helpers/update
+
+CHOICE=1
+
+printf "%s===============================================%s\n" "${GREEN}" "${NC}"
+printf "%s            Cap nhat & canh bao                %s\n" "${GREEN}" "${NC}"
+printf "%s===============================================%s\n" "${GREEN}" "${NC}"
+if upd_alert_enabled; then
+    printf "%sCanh bao cap nhat hang ngay: on%s\n" "${GREEN}" "${NC}"
+else
+    printf "%sCanh bao cap nhat hang ngay: off%s\n" "${RED}" "${NC}"
+fi
+if [ -s "${UPD_PENDING}" ]; then
+    printf "%sCo ban cap nhat:%s\n" "${RED}" "${NC}"
+    cat "${UPD_PENDING}"
+fi
+printf "%s===============================================%s\n" "${GREEN}" "${NC}"
+
+while [ "${CHOICE}" != "0" ]; do
+    printf "%s1. Kiem tra ban cap nhat%s\n" "${GREEN}" "${NC}"
+    if ws_is_apache; then
+        printf "%s2. Cap nhat Apache%s\n" "${GREEN}" "${NC}"
+    else
+        printf "%s2. Cap nhat Nginx%s\n" "${GREEN}" "${NC}"
+    fi
+    printf "%s3. Cap nhat PHP%s\n" "${GREEN}" "${NC}"
+    printf "%s4. Cap nhat MariaDB%s\n" "${GREEN}" "${NC}"
+    printf "%s5. Cap nhat CrowdSec%s\n" "${GREEN}" "${NC}"
+    printf "%s6. Cap nhat toan bo goi he dieu hanh%s\n" "${GREEN}" "${NC}"
+    printf "%s7. ${lang_manager_update_scripts}%s\n" "${GREEN}" "${NC}"
+    printf "%s8. Bat/Tat canh bao cap nhat (menu + Telegram)%s\n" "${GREEN}" "${NC}"
+    printf "%s===============================================%s\n" "${GREEN}" "${NC}"
+    read -r -p " ${SELECT_OPTION} " CHOICE
+    if [ -z "${CHOICE}" ]; then
+        CHOICE=1
+        continue
+    fi
+    case ${CHOICE} in
+    1) clear; update_check ;;
+    2) clear; if ws_is_apache; then update_packages apache; else update_nginx; menu_update; fi ;;
+    3) clear; update_packages php ;;
+    4) clear; update_packages mariadb ;;
+    5) clear; update_packages crowdsec ;;
+    6) clear; update_packages system ;;
+    7) clear; update_script; menu_update ;;
+    8) clear; update_alert; menu_update ;;
+    0) clear; menu_primary ;;
+    *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}" ;;
+    esac
+done

@@ -27,7 +27,7 @@ _select_ssl_le_website(){
         for le_entry in .*.conf; do
             domain=${le_entry/./}
             domain=${domain//.conf/}
-            check_ssl_config=$(grep -w "ssl_certificate" "${VHOST_DIR}/${domain}.conf")
+            check_ssl_config=$(grep -wE "ssl_certificate|SSLCertificateFile" "${VHOST_DIR}/${domain}.conf")
             if [[ -f "${SSL_DIR}/${domain}/key.pem" && -f "${SSL_DIR}/${domain}/cert.pem" && -s "${SSL_DIR}/${domain}/key.pem" && -s "${SSL_DIR}/${domain}/cert.pem" && -n "${check_ssl_config}" ]]; then
                 le_domains+=("${domain}")
             fi
@@ -51,6 +51,10 @@ _remove_ssl_cert(){
     rm -rf "${SSL_DIR}"/"${domain}"/key.pem
     rm -rf "${SSL_DIR}"/"${domain}"/cert.pem
     rm -rf /root/.acme.sh/"${domain}"
+    if ws_is_apache; then
+        ap_vhost_write "${domain}"
+        return
+    fi
     sed -i '/https.conf/d' "${VHOST_DIR}"/"${domain}".conf
     sed -i '/ssl_certificate/d' "${VHOST_DIR}"/"${domain}".conf
     sed -i '/ssl_certificate_key/d' "${VHOST_DIR}"/"${domain}".conf

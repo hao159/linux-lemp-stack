@@ -1,0 +1,124 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: Sanvv - HOSTVN Technical                    #
+#                  Website: https://hostvn.vn                        #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# Update packages with apt/dnf. UPD_TARGET = php | mariadb | crowdsec | apache | system
+
+source /var/hostvn/menu/helpers/update
+source /var/hostvn/menu/helpers/crowdsec
+
+_set_var(){
+    case ${UPD_TARGET} in
+    php) upd_label="PHP" ;;
+    mariadb) upd_label="MariaDB" ;;
+    crowdsec) upd_label="CrowdSec" ;;
+    apache) upd_label="Apache" ;;
+    *) UPD_TARGET="system"; upd_label="he dieu hanh" ;;
+    esac
+    upd_regex="."
+    [ "${UPD_TARGET}" != "system" ] && upd_regex=$(upd_group_regex "${UPD_TARGET}")
+}
+
+_after_php(){
+    local svc
+    for svc in $(upd_php_services); do
+        systemctl restart "${svc}"
+    done
+}
+
+_after_mariadb(){
+    systemctl is-active --quiet mariadb || systemctl start mariadb
+    # system tables of the new version, the Debian packages already run it
+    if command -v mariadb-upgrade >/dev/null 2>&1; then
+        mariadb-upgrade >/dev/null 2>&1
+    fi
+}
+
+_after_crowdsec(){
+    cscli hub update >/dev/null 2>&1
+    cscli hub upgrade >/dev/null 2>&1
+    systemctl restart crowdsec
+}
+
+_run(){
+    local list down
+    if [ "${UPD_TARGET}" == "crowdsec" ] && ! cs_installed; then
+        ALERT=$(printf "%s" "${RED}Ban chua cai dat CrowdSec.${NC}")
+        return
+    fi
+
+    printf "%s\n" "${GREEN}Dang kiem tra ban cap nhat ${upd_label}...${NC}"
+    upd_pkg_refresh
+    list=$(upd_pkg_pending | awk -v re="${upd_regex}" '$1 ~ re {print "  " $1 ": " $2 " -> " $3 ($4 == 1 ? "  (bao mat)" : "")}')
+    if [ -z "${list}" ]; then
+        ALERT=$(printf "%s" "${GREEN}Khong co ban cap nhat ${upd_label} nao.${NC}")
+        return
+    fi
+
+    printf "%s\n" "Cac goi se duoc cap nhat:"
+    printf "%s\n" "${list}"
+    echo
+    case ${UPD_TARGET} in
+    php) printf "%s\n" "PHP-FPM se duoc restart sau khi cap nhat." ;;
+    mariadb) printf "%s\n" "${RED}MariaDB se duoc restart, website gian doan trong luc cap nhat. Nen backup database truoc.${NC}" ;;
+    apache) printf "%s\n" "Apache se duoc restart sau khi cap nhat." ;;
+    system) printf "%s\n" "${RED}Cac dich vu duoc cap nhat (PHP, MariaDB ...) se tu restart.${NC}" ;;
+    esac
+    read -r -p "Ban co muon cap nhat ${upd_label} khong ? (y/n) " prompt_upd_pkg
+    if [[ ! "${prompt_upd_pkg}" =~ ^([yY])$ ]]; then
+        ALERT=$(printf "%s" "${RED}Huy hanh dong.${NC}")
+        return
+    fi
+
+    if [ "${UPD_TARGET}" == "system" ]; then
+        upd_system_upgrade
+    else
+        upd_pkg_upgrade_match "${upd_regex}"
+    fi
+    upd_rc=$?
+
+    case ${UPD_TARGET} in
+    php) _after_php ;;
+    mariadb) _after_mariadb ;;
+    crowdsec) _after_crowdsec ;;
+    apache) ap_test >/dev/null 2>&1 && command systemctl restart "${AP_SERVICE}" ;;
+    esac
+
+    down=$(upd_services_down)
+    if [ "${upd_rc}" -ne 0 ]; then
+        ALERT=$(printf "%s" "${RED}Cap nhat ${upd_label} that bai, xem thong bao loi cua apt/dnf o tren.${NC}")
+    elif [ -n "${down}" ]; then
+        ALERT=$(printf "%s" "${RED}Da cap nhat ${upd_label} nhung dich vu sau khong chay: ${down}${NC}")
+    else
+        ALERT=$(printf "%s" "${GREEN}Cap nhat ${upd_label} thanh cong.${NC}")
+    fi
+    if upd_reboot_required; then
+        NOTE=$(printf "%s" "${RED}Can reboot VPS de ap dung ban cap nhat (kernel/thu vien he thong).${NC}")
+    fi
+    (upd_check >/dev/null 2>&1 &)
+}
+
+ALERT=''
+NOTE=''
+prompt_upd_pkg=''
+upd_label=''
+upd_regex=''
+upd_rc=0
+
+_set_var
+_run
+UPD_TARGET=''
+if [ "${upd_rc}" -eq 0 ]; then
+    clear
+fi
+printf "%s\n" "${ALERT}"
+[ -n "${NOTE}" ] && printf "%s\n" "${NOTE}"
+menu_update

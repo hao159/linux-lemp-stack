@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Look for updates of Nginx, PHP, MariaDB, CrowdSec, the OS packages and the script.
+# The result is shown in the hostvn menu and sent to Telegram when it is configured.
+# Cron: 23 5 * * *
+
+source /var/hostvn/menu/helpers/os
+source /var/hostvn/menu/helpers/telegram
+source /var/hostvn/menu/helpers/update
+
+upd_check refresh
+upd_notify
