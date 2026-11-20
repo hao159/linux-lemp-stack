@@ -373,12 +373,12 @@ setup_telegram() {
     [ "${SETUP_TELEGRAM}" == "y" ] || return 0
 
     set +x
-    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}"
     tg_ssh_enable
     tg_service_enable
     tg_disk_enable
     TELEGRAM_STATUS="SSH login, dich vu, o cung"
-    if cs_installed && cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"; then
+    if cs_installed && cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}"; then
         TELEGRAM_STATUS="${TELEGRAM_STATUS}, IP bi CrowdSec chan"
     fi
     set -x

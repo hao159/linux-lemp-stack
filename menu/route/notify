@@ -18,7 +18,7 @@ printf "%s========================================%s\n" "${GREEN}" "${NC}"
 
 while [ "${CHOICE}" != "0" ]
 do
-    printf "%s1. Cau hinh Telegram (Bot Token / Chat ID)%s\n" "${GREEN}" "${NC}"
+    printf "%s1. Cau hinh Telegram (Bot Token / Chat ID / Thread ID)%s\n" "${GREEN}" "${NC}"
     printf "%s2. Notify SSH Login%s\n" "${GREEN}" "${NC}"
     printf "%s3. Notify Service (Nginx, MariaDB, PHP, CrowdSec)%s\n" "${GREEN}" "${NC}"
     printf "%s4. Notify Disk Usage%s\n" "${GREEN}" "${NC}"

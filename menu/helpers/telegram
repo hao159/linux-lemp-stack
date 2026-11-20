@@ -5,6 +5,8 @@
 #                                                                    #
 #  The bot token and chat id are stored once in TG_CONF and reused   #
 #  by every notification (SSH login, services, disk, CrowdSec).      #
+#  An optional message thread id sends them to one topic of a forum  #
+#  supergroup.                                                       #
 ######################################################################
 
 # shellcheck disable=SC2034
@@ -26,13 +28,22 @@ tg_valid_chat_id() {
     [[ "$1" =~ ^-?[0-9]+$ || "$1" =~ ^@[A-Za-z0-9_]+$ ]]
 }
 
-# Load TELEGRAM_ID / TELEGRAM_TOKEN, returns 1 when Telegram is not configured.
+# The message thread id (topic of a forum supergroup) is a positive integer.
+tg_valid_thread_id() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+# Load TELEGRAM_ID / TELEGRAM_TOKEN / TELEGRAM_THREAD, returns 1 when Telegram is not configured.
+# TELEGRAM_THREAD is optional and stays empty when no topic is configured.
 tg_load() {
     TELEGRAM_ID=""
     TELEGRAM_TOKEN=""
+    TELEGRAM_THREAD=""
     [ -r "${TG_CONF}" ] || return 1
     TELEGRAM_ID=$(grep -m1 '^TELEGRAM_ID=' "${TG_CONF}" | cut -f2- -d'=' | tr -d '"')
     TELEGRAM_TOKEN=$(grep -m1 '^TELEGRAM_TOKEN=' "${TG_CONF}" | cut -f2- -d'=' | tr -d '"')
+    TELEGRAM_THREAD=$(grep -m1 '^TELEGRAM_THREAD=' "${TG_CONF}" | cut -f2- -d'=' | tr -d '"')
+    tg_valid_thread_id "${TELEGRAM_THREAD}" || TELEGRAM_THREAD=""
     tg_valid_token "${TELEGRAM_TOKEN}" && tg_valid_chat_id "${TELEGRAM_ID}"
 }
 
@@ -40,13 +51,13 @@ tg_configured() {
     (tg_load)
 }
 
-# tg_save <chat_id> <token>
+# tg_save <chat_id> <token> [thread_id]
 tg_save() {
     mkdir -p "${TG_DIR}"
     chmod 700 "${TG_DIR}"
     (
         umask 077
-        printf 'TELEGRAM_ID="%s"\nTELEGRAM_TOKEN="%s"\n' "$1" "$2" >"${TG_CONF}"
+        printf 'TELEGRAM_ID="%s"\nTELEGRAM_TOKEN="%s"\nTELEGRAM_THREAD="%s"\n' "$1" "$2" "$3" >"${TG_CONF}"
     )
     chmod 600 "${TG_CONF}"
 }
@@ -54,11 +65,14 @@ tg_save() {
 ############################################
 # Send
 ############################################
-# tg_send <token> <chat_id> <text>
+# tg_send <token> <chat_id> <text> [thread_id]
 tg_send() {
     local res
+    local -a thread=()
+    [ -n "$4" ] && thread=(--data-urlencode "message_thread_id=${4}")
     res=$(curl -s --max-time 10 "https://api.telegram.org/bot${1}/sendMessage" \
         --data-urlencode "chat_id=${2}" \
+        "${thread[@]}" \
         --data-urlencode "disable_web_page_preview=1" \
         --data-urlencode "text=${3}" 2>/dev/null)
     [[ "${res}" == *'"ok":true'* ]]
@@ -67,7 +81,7 @@ tg_send() {
 # tg_notify <text> : send with the saved credentials
 tg_notify() {
     tg_load || return 1
-    tg_send "${TELEGRAM_TOKEN}" "${TELEGRAM_ID}" "$1"
+    tg_send "${TELEGRAM_TOKEN}" "${TELEGRAM_ID}" "$1" "${TELEGRAM_THREAD}"
 }
 
 tg_server_name() {
@@ -78,13 +92,16 @@ tg_server_name() {
 }
 
 # Ask for the token and chat id until a test message goes through.
-# Sets TELEGRAM_TOKEN / TELEGRAM_ID. Returns 1 when the user gives up (empty token).
+# Sets TELEGRAM_TOKEN / TELEGRAM_ID / TELEGRAM_THREAD. Returns 1 when the user gives up (empty token).
 tg_prompt() {
-    local token id
+    local token id thread
     echo "Huong dan:"
     echo "  1. Chat voi @BotFather, go /newbot de tao bot va lay Bot Token."
     echo "  2. Mo bot vua tao va bam Start (bot chi gui duoc tin khi ban da Start)."
     echo "  3. Chat voi @userinfobot de lay Chat ID (ID group bat dau bang dau -)."
+    echo "  4. Neu group co bat Topics va muon gui vao mot topic: copy link mot tin nhan"
+    echo "     trong topic do (https://t.me/c/<group>/<thread id>/<tin nhan>) de lay"
+    echo "     Message Thread ID. Khong dung topic thi bo trong."
     echo ""
     while true; do
         read -r -p "Nhap vao Telegram Bot Token (Enter de bo qua): " token
@@ -92,6 +109,7 @@ tg_prompt() {
             return 1
         fi
         read -r -p "Nhap vao Telegram Chat ID: " id
+        read -r -p "Nhap vao Message Thread ID (Enter neu khong dung topic): " thread
         if ! tg_valid_token "${token}"; then
             echo "Bot Token khong dung dinh dang (vi du: 123456789:AAxxxxxxxx). Vui long nhap lai."
             continue
@@ -100,13 +118,18 @@ tg_prompt() {
             echo "Chat ID khong dung dinh dang (vi du: 123456789 hoac -1001234567890). Vui long nhap lai."
             continue
         fi
-        if tg_send "${token}" "${id}" "[$(hostname)] Ket noi Telegram thanh cong."; then
+        if [ -n "${thread}" ] && ! tg_valid_thread_id "${thread}"; then
+            echo "Message Thread ID phai la so nguyen duong (vi du: 12). Vui long nhap lai."
+            continue
+        fi
+        if tg_send "${token}" "${id}" "[$(hostname)] Ket noi Telegram thanh cong." "${thread}"; then
             TELEGRAM_TOKEN="${token}"
             TELEGRAM_ID="${id}"
+            TELEGRAM_THREAD="${thread}"
             echo "Da gui tin nhan thu, hay kiem tra Telegram."
             return 0
         fi
-        echo "Khong gui duoc tin nhan thu. Kiem tra lai Token, Chat ID va chac chan ban da bam Start voi bot."
+        echo "Khong gui duoc tin nhan thu. Kiem tra lai Token, Chat ID, Message Thread ID va chac chan ban da bam Start voi bot."
     done
 }
 
@@ -114,7 +137,7 @@ tg_prompt() {
 tg_require() {
     tg_load && return 0
     tg_prompt || return 1
-    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}"
 }
 
 ############################################

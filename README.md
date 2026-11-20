@@ -81,6 +81,7 @@ Lưu ý:
 - Port admin (phpMyAdmin, Opcache dashboard) không đi qua AppSec để tránh chặn nhầm câu lệnh SQL.
 - IP đang SSH lúc cài CrowdSec được thêm vào danh sách tin cậy. Thêm IP khác: Firewall → CrowdSec & AppSec → IP tin cậy.
 - Bot Token và Chat ID chỉ nhập một lần, lưu ở `/var/hostvn/telegram/telegram.conf` (quyền 600).
+- Group Telegram có bật Topics: nhập thêm **Message Thread ID** để mọi thông báo vào đúng một topic (lấy từ link tin nhắn trong topic: `https://t.me/c/<group>/<thread id>/<tin nhắn>`). Bỏ trống nếu không dùng topic. Đổi lại ở Công cụ → Telegram notify → Cấu hình Telegram.
 
 ## 4. Tạo website chạy bằng IP:PORT
 

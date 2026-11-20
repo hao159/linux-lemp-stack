@@ -28,7 +28,7 @@ _run(){
         fi
     elif ! tg_require; then
         ALERT=$(printf "%s" "${RED}Ban chua cau hinh Telegram.${NC}")
-    elif msg=$(cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"); then
+    elif msg=$(cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}"); then
         ALERT=$(printf "%s" "${GREEN}Bat thong bao CrowdSec thanh cong. Moi IP bi chan se duoc gui ve Telegram.${NC}")
     else
         ALERT=$(printf "%s" "${RED}Bat thong bao CrowdSec that bai. ${msg}${NC}")

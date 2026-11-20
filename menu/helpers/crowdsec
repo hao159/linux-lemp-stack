@@ -588,12 +588,15 @@ _cs_profiles_del() {
     rm -f "${tmp}"
 }
 
-# cs_telegram_enable <chat_id> <token>
+# cs_telegram_enable <chat_id> <token> [thread_id]
 cs_telegram_enable() {
+    local thread=""
     if ! cs_installed; then
         echo "Ban chua cai dat CrowdSec."
         return 1
     fi
+    # Optional topic of a forum supergroup
+    [[ "$3" =~ ^[1-9][0-9]*$ ]] && thread="\"message_thread_id\": ${3}, "
     mkdir -p /etc/crowdsec/notifications
     (
         umask 077
@@ -603,7 +606,7 @@ type: http
 name: ${CS_TG_NAME}
 log_level: info
 format: |
-  {"chat_id": "${1}", "disable_web_page_preview": true, "text": "[$(hostname)] CrowdSec\n{{range . -}}{{range .Decisions -}}{{.Value}}: {{.Type}} {{.Duration}} - {{.Scenario}}\n{{end -}}{{end -}}"}
+  {"chat_id": "${1}", ${thread}"disable_web_page_preview": true, "text": "[$(hostname)] CrowdSec\n{{range . -}}{{range .Decisions -}}{{.Value}}: {{.Type}} {{.Duration}} - {{.Scenario}}\n{{end -}}{{end -}}"}
 url: https://api.telegram.org/bot${2}/sendMessage
 method: POST
 headers:

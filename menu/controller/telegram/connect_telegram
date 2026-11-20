@@ -15,18 +15,18 @@ source /var/hostvn/menu/helpers/crowdsec
 
 _run(){
     if tg_load; then
-        printf "%s\n" "${GREEN}Telegram da duoc cau hinh (Chat ID: ${TELEGRAM_ID}). Nhap thong tin moi de thay doi.${NC}"
+        printf "%s\n" "${GREEN}Telegram da duoc cau hinh (Chat ID: ${TELEGRAM_ID}, Message Thread ID: ${TELEGRAM_THREAD:-khong dung}). Nhap thong tin moi de thay doi.${NC}"
     fi
 
     if ! tg_prompt; then
         ALERT=$(printf "%s\n" "${RED}Huy cau hinh Telegram.${NC}")
         return
     fi
-    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}"
+    tg_save "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}"
 
-    # The CrowdSec plugin keeps its own copy of the token
+    # The CrowdSec plugin keeps its own copy of the token, chat id and thread id
     if cs_telegram_enabled; then
-        cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" >/dev/null
+        cs_telegram_enable "${TELEGRAM_ID}" "${TELEGRAM_TOKEN}" "${TELEGRAM_THREAD}" >/dev/null
     fi
     ALERT=$(printf "%s\n" "${GREEN}Cau hinh Telegram thanh cong.${NC}")
 }

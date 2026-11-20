@@ -6,6 +6,7 @@ v1.1.0
 - Added: Nginx access log is switched on with CrowdSec, daily logrotate with a selectable retention
 - Added: Telegram can be configured during the installation; Bot Token / Chat ID are saved once
 - Added: Telegram message for every IP banned by CrowdSec
+- Added: optional Telegram Message Thread ID, notifications can go to one topic of a forum group
 - Changed: Telegram service/disk notify run from menu/cronjob, service notify works on RHEL family
 
 v1.0.0
